@@ -65,3 +65,84 @@ def test_incomplete_model_download_is_rejected(tmp_path: Path) -> None:
     cache = WhisperModelCache(tmp_path, downloader=incomplete_download)
     with pytest.raises(RuntimeError, match="incomplete"):
         cache.ensure("small")
+
+
+def test_standard_huggingface_snapshot_is_reused_without_download(tmp_path: Path) -> None:
+    managed_root = tmp_path / "managed"
+    hub_root = tmp_path / "huggingface" / "hub"
+    repository = hub_root / "models--mlx-community--whisper-large-v3-turbo"
+    snapshot = repository / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "weights.safetensors").write_bytes(b"weights")
+    (repository / "refs").mkdir()
+    (repository / "refs" / "main").write_text("abc123\n", encoding="utf-8")
+    calls: list[str] = []
+
+    cache = WhisperModelCache(
+        managed_root,
+        hub_cache_root=hub_root,
+        downloader=lambda repository, _destination: calls.append(repository),
+    )
+
+    assert cache.is_cached("large-v3-turbo")
+    assert cache.cached_directory("large-v3-turbo") == snapshot
+    assert cache.ensure("large-v3-turbo") == snapshot
+    assert calls == []
+    assert not (managed_root / "large-v3-turbo").exists()
+
+
+def test_huggingface_cache_skips_incomplete_main_snapshot(tmp_path: Path) -> None:
+    hub_root = tmp_path / "hub"
+    repository = hub_root / "models--mlx-community--whisper-base-mlx"
+    incomplete = repository / "snapshots" / "new"
+    complete = repository / "snapshots" / "old"
+    incomplete.mkdir(parents=True)
+    complete.mkdir(parents=True)
+    (incomplete / "config.json").write_text("{}", encoding="utf-8")
+    (complete / "config.json").write_text("{}", encoding="utf-8")
+    (complete / "weights.npz").write_bytes(b"weights")
+    (repository / "refs").mkdir()
+    (repository / "refs" / "main").write_text("new", encoding="utf-8")
+
+    cache = WhisperModelCache(tmp_path / "managed", hub_cache_root=hub_root)
+
+    assert cache.cached_directory("base") == complete
+
+
+def test_custom_cache_without_hub_root_remains_hermetic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_home = tmp_path / "home"
+    snapshot = (
+        fake_home
+        / ".cache/huggingface/hub/models--mlx-community--whisper-small-mlx"
+        / "snapshots/revision"
+    )
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "weights.npz").write_bytes(b"weights")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    cache = WhisperModelCache(tmp_path / "custom")
+
+    assert not cache.is_cached("small")
+
+
+def test_default_cache_discovers_standard_huggingface_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_home = tmp_path / "home"
+    snapshot = (
+        fake_home
+        / ".cache/huggingface/hub/models--mlx-community--whisper-base-mlx"
+        / "snapshots/revision"
+    )
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "weights.npz").write_bytes(b"weights")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    cache = WhisperModelCache()
+
+    assert cache.cached_directory("base") == snapshot

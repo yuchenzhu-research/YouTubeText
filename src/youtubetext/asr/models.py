@@ -142,37 +142,98 @@ class WhisperModelCache:
         root: Path | None = None,
         *,
         downloader: ModelDownloader | None = None,
+        hub_cache_root: Path | None = None,
     ) -> None:
+        custom_root = root is not None or bool(
+            os.environ.get("YOUTUBETEXT_WHISPER_CACHE", "").strip()
+        )
         self.root = Path(root or default_cache_root()).expanduser()
         self._download = downloader or _default_downloader
+        # Explicit app-cache roots and injected downloaders stay hermetic by
+        # default. Production instances additionally discover weights that
+        # mlx-whisper/Hugging Face may have already downloaded themselves.
+        self.hub_cache_root = (
+            Path(hub_cache_root).expanduser()
+            if hub_cache_root is not None
+            else (
+                None
+                if custom_root or downloader is not None
+                else standard_huggingface_cache_root()
+            )
+        )
         self._lock = threading.Lock()
 
     def directory_for(self, model: WhisperModel | str) -> Path:
         spec = MODELS[model] if isinstance(model, str) else model
         return self.root / spec.directory_name
 
+    def cached_directory(self, model: WhisperModel | str) -> Path | None:
+        """Return the complete local model actually available for inference.
+
+        YouTubeText's managed directory wins when present. Otherwise, the
+        standard Hugging Face snapshot layout is inspected without importing
+        the Hub client or making any network request.
+        """
+
+        spec = MODELS[model] if isinstance(model, str) else model
+        managed = self.directory_for(spec)
+        if _is_complete_model_directory(managed):
+            return managed
+        return self._huggingface_snapshot(spec)
+
     def is_cached(self, model: WhisperModel | str) -> bool:
-        directory = self.directory_for(model)
-        return (directory / "config.json").is_file() and any(
-            (directory / filename).is_file() for filename in WEIGHT_FILENAMES
-        )
+        return self.cached_directory(model) is not None
 
     def ensure(self, model: WhisperModel | str) -> Path:
         spec = MODELS[model] if isinstance(model, str) else model
-        destination = self.directory_for(spec)
-        if self.is_cached(spec):
-            return destination
+        available = self.cached_directory(spec)
+        if available is not None:
+            return available
 
         with self._lock:
-            if self.is_cached(spec):
-                return destination
+            available = self.cached_directory(spec)
+            if available is not None:
+                return available
+            destination = self.directory_for(spec)
             destination.mkdir(parents=True, exist_ok=True)
             self._download(spec.repository, destination)
-            if not self.is_cached(spec):
+            if not _is_complete_model_directory(destination):
                 raise RuntimeError(
                     f"Whisper download for {spec.name!r} is incomplete in {destination}"
                 )
         return destination
+
+    def _huggingface_snapshot(self, model: WhisperModel) -> Path | None:
+        root = self.hub_cache_root
+        if root is None:
+            return None
+        repository_dir = root / f"models--{model.repository.replace('/', '--')}"
+        snapshots = repository_dir / "snapshots"
+
+        candidates: list[Path] = []
+        # Prefer the revision selected by Hugging Face's main ref when it is
+        # available, then fall back to any other complete local snapshot.
+        main_ref = repository_dir / "refs" / "main"
+        try:
+            revision = main_ref.read_text(encoding="utf-8").strip()
+        except OSError:
+            revision = ""
+        if revision and Path(revision).name == revision:
+            candidates.append(snapshots / revision)
+
+        try:
+            candidates.extend(
+                path
+                for path in sorted(snapshots.iterdir(), key=lambda item: item.name, reverse=True)
+                if path not in candidates
+            )
+        except OSError:
+            pass
+
+        for candidate in candidates:
+            if _is_complete_model_directory(candidate):
+                return candidate
+        return None
 
 
 def default_cache_root() -> Path:
@@ -182,3 +243,27 @@ def default_cache_root() -> Path:
     if override:
         return Path(override)
     return Path.home() / "Library" / "Caches" / "YouTubeText" / "whisper"
+
+
+def standard_huggingface_cache_root() -> Path:
+    """Resolve Hugging Face's standard Hub cache without importing it."""
+
+    direct = (
+        os.environ.get("HF_HUB_CACHE", "").strip()
+        or os.environ.get("HUGGINGFACE_HUB_CACHE", "").strip()
+    )
+    if direct:
+        return Path(direct).expanduser()
+    hf_home = os.environ.get("HF_HOME", "").strip()
+    if hf_home:
+        return Path(hf_home).expanduser() / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _is_complete_model_directory(directory: Path) -> bool:
+    try:
+        return (directory / "config.json").is_file() and any(
+            (directory / filename).is_file() for filename in WEIGHT_FILENAMES
+        )
+    except OSError:
+        return False

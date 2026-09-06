@@ -36,6 +36,11 @@ class MLXWhisperASR:
 
     @property
     def model_cached(self) -> bool:
+        if self._transcribe_callable is not None:
+            # The injected engine is deliberately independent of local model
+            # state; reporting a host cache here would make offline tests and
+            # alternative adapters environment-dependent.
+            return False
         return self.cache.is_cached(self.model)
 
     def transcribe(self, audio_path: str | Path, *, language: str = "auto") -> ASRResult:
