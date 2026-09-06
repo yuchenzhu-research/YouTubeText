@@ -132,13 +132,26 @@ def subtitle_segments_from_frames(
                 flush()
             continue
 
+        effective_threshold = (
+            similarity_threshold
+            if min(active_confidence, confidence) <= 0.5
+            else max(similarity_threshold, 0.88)
+        )
         if active_text and captions_are_similar(
             active_text,
             text,
-            threshold=similarity_threshold,
+            threshold=effective_threshold,
         ):
             last_seen = timestamp
-            if (
+            stable_core = (
+                _shared_low_confidence_prefix(active_text, text)
+                if max(active_confidence, confidence) <= 0.5
+                else ""
+            )
+            if stable_core:
+                active_text = stable_core
+                active_confidence = max(active_confidence, confidence)
+            elif (
                 confidence > active_confidence
                 or len(normalize_caption(text)) > len(normalize_caption(active_text))
             ):
@@ -154,3 +167,25 @@ def subtitle_segments_from_frames(
 
     flush()
     return tuple(segments)
+
+
+def _shared_low_confidence_prefix(left: str, right: str) -> str:
+    """Remove two conflicting short suffixes from otherwise stable OCR text."""
+
+    prefix_length = 0
+    for left_character, right_character in zip(left, right):
+        if left_character != right_character:
+            break
+        prefix_length += 1
+    prefix = left[:prefix_length].rstrip()
+    left_suffix = left[prefix_length:].strip()
+    right_suffix = right[prefix_length:].strip()
+    if not prefix or not left_suffix or not right_suffix or left_suffix == right_suffix:
+        return ""
+    if len(left_suffix) > 2 or len(right_suffix) > 2:
+        return ""
+    normalized_prefix = normalize_caption(prefix)
+    shorter_length = min(len(normalize_caption(left)), len(normalize_caption(right)))
+    if shorter_length < 4 or len(normalized_prefix) / shorter_length < 0.8:
+        return ""
+    return prefix

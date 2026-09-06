@@ -83,6 +83,51 @@ def test_ocr_correction_frames_collapse_to_the_highest_confidence_text() -> None
     assert segments[0].text == "盡快達成清零之後再復工復產"
 
 
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        (
+            "有的地方為了解決這個問題X",
+            "有的地方為了解決這個問題＆",
+            "有的地方為了解決這個問題",
+        ),
+        (
+            "開辦了專門的農民工子弟學校*",
+            "開辦了專門的農民工子弟學校文",
+            "開辦了專門的農民工子弟學校",
+        ),
+    ],
+)
+def test_conflicting_low_confidence_suffix_noise_is_removed(
+    first: str,
+    second: str,
+    expected: str,
+) -> None:
+    frames = [
+        timed(0.0, observation(first, confidence=0.5)),
+        timed(1.0, observation(second, confidence=0.5)),
+    ]
+
+    segments = subtitle_segments_from_frames(frames, frame_duration_seconds=1.0)
+
+    assert len(segments) == 1
+    assert segments[0].text == expected
+
+
+def test_high_confidence_final_word_is_not_treated_as_suffix_noise() -> None:
+    frames = [
+        timed(0.0, observation("今天採訪的是張三", confidence=1.0)),
+        timed(1.0, observation("今天採訪的是張偉", confidence=1.0)),
+    ]
+
+    segments = subtitle_segments_from_frames(frames, frame_duration_seconds=1.0)
+
+    assert [segment.text for segment in segments] == [
+        "今天採訪的是張三",
+        "今天採訪的是張偉",
+    ]
+
+
 def test_frames_collapse_to_timestamped_segments_and_keep_best_text() -> None:
     frames = [
         timed(0.0, observation("第一句字幕", confidence=0.6)),
