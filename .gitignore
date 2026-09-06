@@ -1,0 +1,48 @@
+# Reference implementations are kept locally for comparison only.
+reference/
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# JavaScript
+node_modules/
+frontend/node_modules/
+frontend/.vite/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+release-config.json
+
+# Runtime and generated artifacts
+temp/
+logs/
+bin/
+build/
+dist/
+static/
+*.log
+*.tmp
+
+# Downloaded media and local model weights
+*.mp3
+*.m4a
+*.wav
+*.mp4
+*.mkv
+*.webm
+models/
+.cache/
