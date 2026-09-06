@@ -52,6 +52,9 @@ xcode-select --install
 
 ## 安装
 
+当前唯一正式支持的安装方式是克隆 Git 仓库后运行 `scripts/install.sh`；项目尚未提供
+PyPI 包或 wheel 安装包。
+
 ```bash
 git clone https://github.com/yuchenzhu-research/YouTubeText.git
 cd YouTubeText
@@ -220,7 +223,7 @@ Whisper 只在没有可用字幕轨和硬字幕，或明确选择 `whisper` / `h
 - 平台访问能力依赖 yt-dlp；受地区、账号、Cookies 或平台变更影响的视频可能失败。
 - Apple Vision OCR 针对视频下方的硬字幕优化；其他位置或高度装饰化的文字可能需要
   手动选择 Whisper。
-- Bilibili 接口和字幕路径已有离线测试，仍需要更多不同类型的公开视频做兼容验证。
+- Bilibili 元数据和临时媒体下载已实时验证，字幕兼容仍需更多公开视频验证。
 
 ## 参考实现
 
