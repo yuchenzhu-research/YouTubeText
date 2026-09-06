@@ -460,7 +460,7 @@ def _ocr_transcript(
     *,
     warnings: tuple[str, ...] = (),
 ) -> Transcript:
-    language = requested_language if requested_language.lower() != "auto" else "und"
+    language = _detected_ocr_language(requested_language, metadata, segments)
     return Transcript(
         metadata=metadata,
         language=language,
@@ -468,6 +468,62 @@ def _ocr_transcript(
         segments=segments,
         warnings=warnings,
     )
+
+
+def _detected_ocr_language(
+    requested_language: str,
+    metadata: SourceMetadata,
+    segments: Sequence[TranscriptSegment],
+) -> str:
+    if requested_language.strip().lower() != "auto":
+        return requested_language
+
+    text = f"{metadata.title} {metadata.author} " + " ".join(
+        segment.text for segment in segments
+    )
+    if not any("\u3400" <= character <= "\u9fff" for character in text):
+        return "und"
+
+    pairs = {
+        "爱": "愛",
+        "边": "邊",
+        "变": "變",
+        "发": "發",
+        "个": "個",
+        "国": "國",
+        "还": "還",
+        "后": "後",
+        "会": "會",
+        "仅": "僅",
+        "开": "開",
+        "来": "來",
+        "里": "裡",
+        "领": "領",
+        "门": "門",
+        "区": "區",
+        "让": "讓",
+        "时": "時",
+        "说": "說",
+        "台": "臺",
+        "体": "體",
+        "万": "萬",
+        "为": "為",
+        "现": "現",
+        "学": "學",
+        "亿": "億",
+        "应": "應",
+        "与": "與",
+        "长": "長",
+        "这": "這",
+        "种": "種",
+    }
+    simplified_score = sum(text.count(character) for character in pairs)
+    traditional_score = sum(text.count(character) for character in pairs.values())
+    if traditional_score > simplified_score:
+        return "zh-Hant"
+    if simplified_score > traditional_score:
+        return "zh-Hans"
+    return "zh"
 
 
 def merge_ocr_and_asr(

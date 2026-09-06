@@ -7,6 +7,7 @@ import pytest
 from youtubetext.acquisition import (
     TranscriptAcquisitionError,
     TranscriptPipeline,
+    _detected_ocr_language,
     _ocr_languages,
 )
 from youtubetext.asr import ASRResult
@@ -265,3 +266,13 @@ def test_auto_ocr_language_prioritizes_traditional_chinese_for_cjk_metadata():
         "en-US",
         "es-ES",
     )
+
+
+def test_auto_ocr_language_reports_the_detected_chinese_script():
+    traditional = (TranscriptSegment(0, 1, "這個國家發生變化"),)
+    simplified = (TranscriptSegment(0, 1, "这个国家发生变化"),)
+
+    assert _detected_ocr_language("auto", META, traditional) == "zh-Hant"
+    neutral_meta = SourceMetadata(URL, "youtube", "video", "Test video")
+    assert _detected_ocr_language("auto", neutral_meta, simplified) == "zh-Hans"
+    assert _detected_ocr_language("es", neutral_meta, traditional) == "es"
