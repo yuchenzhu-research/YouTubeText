@@ -12,6 +12,7 @@ from youtubetext.domain import TranscriptSegment
 from .types import OCRObservation, TimedOCRFrame
 
 _NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
+DEFAULT_SIMILARITY_THRESHOLD = 0.84
 
 
 def normalize_caption(text: str) -> str:
@@ -20,7 +21,12 @@ def normalize_caption(text: str) -> str:
     return _NORMALIZE_RE.sub("", text.casefold())
 
 
-def captions_are_similar(left: str, right: str, *, threshold: float = 0.88) -> bool:
+def captions_are_similar(
+    left: str,
+    right: str,
+    *,
+    threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+) -> bool:
     """Return whether two noisy OCR strings represent the same subtitle."""
 
     if not 0.0 <= threshold <= 1.0:
@@ -73,7 +79,7 @@ def subtitle_segments_from_frames(
     *,
     frame_duration_seconds: float,
     blank_tolerance_seconds: float | None = None,
-    similarity_threshold: float = 0.88,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> tuple[TranscriptSegment, ...]:
     """Collapse chronologically ordered frame OCR into timed subtitle segments.
 

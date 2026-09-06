@@ -52,6 +52,37 @@ def test_caption_similarity_tolerates_spacing_punctuation_and_ocr_suffix() -> No
     assert not captions_are_similar("关税政策发生变化", "今天北京天气晴朗")
 
 
+def test_caption_similarity_tolerates_two_character_ocr_corrections() -> None:
+    assert captions_are_similar(
+        "盡快運成清零之後再復工復產",
+        "，鑫快達成清零之後再復工復產",
+    )
+    assert captions_are_similar(
+        "一關姶呢他們還有點膽膽突突",
+        "一開始呢他們還有點膽膽突突",
+    )
+    assert captions_are_similar("一看你總這麽軟蛋", "一看你總這麼軟蛋")
+    assert not captions_are_similar(
+        "人民是不會忘記你們的",
+        "歷史是不會忘記你們的",
+    )
+
+
+def test_ocr_correction_frames_collapse_to_the_highest_confidence_text() -> None:
+    frames = [
+        timed(44.0, observation("盡快運成清零之後再復工復產", confidence=0.5)),
+        timed(45.0, observation("，鑫快達成清零之後再復工復產", confidence=0.5)),
+        timed(46.0, observation("盡快達成清零之後再復工復產", confidence=1.0)),
+    ]
+
+    segments = subtitle_segments_from_frames(frames, frame_duration_seconds=1.0)
+
+    assert len(segments) == 1
+    assert segments[0].start_seconds == 44.0
+    assert segments[0].end_seconds == 47.0
+    assert segments[0].text == "盡快達成清零之後再復工復產"
+
+
 def test_frames_collapse_to_timestamped_segments_and_keep_best_text() -> None:
     frames = [
         timed(0.0, observation("第一句字幕", confidence=0.6)),
