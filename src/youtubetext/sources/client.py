@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from youtubetext.domain import SourceMetadata
 
 from ._adapter import PlatformAdapter, resolve_adapter, run_with_platform_retries
+from ._yt_dlp import QUIET_YT_DLP_LOGGER
 from .models import SourceFetchError, SourceResult, SubtitleKind, SubtitleTrack
 from .subtitles import parse_subtitle
 
@@ -184,6 +185,7 @@ class SourceClient:
             "noplaylist": True,
             "noprogress": True,
             "skip_download": True,
+            "logger": QUIET_YT_DLP_LOGGER,
         }
         options.update(adapter.yt_dlp_options())
         return options

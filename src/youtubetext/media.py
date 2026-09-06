@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .sources._adapter import resolve_adapter, run_with_platform_retries
+from .sources._yt_dlp import QUIET_YT_DLP_LOGGER
 
 
 class MediaPurpose(str, Enum):
@@ -67,7 +68,8 @@ class MediaDownloader:
             "noplaylist": True,
             "quiet": True,
             "noprogress": True,
-            "no_warnings": False,
+            "no_warnings": True,
+            "logger": QUIET_YT_DLP_LOGGER,
             "retries": 5,
             "fragment_retries": 5,
             "socket_timeout": 30,

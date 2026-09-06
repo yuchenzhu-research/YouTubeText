@@ -37,6 +37,7 @@ async def test_injected_download_runner_can_return_file(tmp_path):
     assert seen["url"] == "https://youtu.be/id"
     assert seen["options"]["extractor_retries"] == 3
     assert seen["options"]["noprogress"] is True
+    assert seen["options"]["logger"] is not None
 
 
 @pytest.mark.asyncio

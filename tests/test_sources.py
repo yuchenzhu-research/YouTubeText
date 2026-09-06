@@ -117,6 +117,7 @@ def test_supported_urls_are_dispatched_to_real_adapters(
         # Preserve yt-dlp's complete, current browser headers instead of
         # replacing them with a partial or stale custom mapping.
         assert "http_headers" not in runner.calls[0][1]
+    assert runner.calls[0][1]["logger"] is not None
 
 
 def test_bilibili_http_412_is_retried_with_bounded_backoff():
