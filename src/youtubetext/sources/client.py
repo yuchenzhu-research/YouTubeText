@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import math
 import tempfile
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
 from youtubetext.domain import SourceMetadata
 
-from ._adapter import PlatformAdapter, resolve_adapter
+from ._adapter import PlatformAdapter, resolve_adapter, run_with_platform_retries
 from .models import SourceFetchError, SourceResult, SubtitleKind, SubtitleTrack
 from .subtitles import parse_subtitle
 
@@ -59,8 +60,14 @@ class SourceClient:
     :class:`SourceFetchError` instead of being mistaken for caption absence.
     """
 
-    def __init__(self, runner: Runner | None = None) -> None:
+    def __init__(
+        self,
+        runner: Runner | None = None,
+        *,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._runner = runner or YtDlpRunner()
+        self._sleeper = sleeper
 
     def fetch(
         self,
@@ -71,11 +78,16 @@ class SourceClient:
         strict_subtitles: bool = True,
     ) -> SourceResult:
         adapter = resolve_adapter(url)
+        request_url = adapter.request_url(url)
         try:
-            info = self._runner.run(
-                url,
-                self._options(adapter),
-                download=False,
+            info = run_with_platform_retries(
+                adapter,
+                lambda: self._runner.run(
+                    request_url,
+                    self._options(adapter),
+                    download=False,
+                ),
+                sleep=self._sleeper,
             )
         except Exception as exc:
             if isinstance(exc, SourceFetchError):
@@ -100,7 +112,7 @@ class SourceClient:
 
         language, kind = selected
         try:
-            subtitle = self._download_subtitle(url, adapter, language, kind)
+            subtitle = self._download_subtitle(request_url, adapter, language, kind)
         except SourceFetchError as exc:
             if strict_subtitles:
                 raise
@@ -131,7 +143,11 @@ class SourceClient:
                 }
             )
             try:
-                self._runner.run(url, options, download=True)
+                run_with_platform_retries(
+                    adapter,
+                    lambda: self._runner.run(url, options, download=True),
+                    sleep=self._sleeper,
+                )
             except Exception as exc:
                 raise SourceFetchError(
                     "subtitle download", str(exc) or type(exc).__name__

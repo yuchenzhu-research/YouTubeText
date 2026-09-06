@@ -77,28 +77,79 @@ Hello world
 
 
 @pytest.mark.parametrize(
-    "url,platform",
+    "url,platform,request_url",
     [
-        ("https://youtube.com/watch?v=abc123", "youtube"),
-        ("https://m.youtube.com/watch?v=abc123", "youtube"),
-        ("https://youtu.be/abc123", "youtube"),
-        ("https://www.bilibili.com/video/BV1abc", "bilibili"),
-        ("https://space.bilibili.com/123/video/BV1abc", "bilibili"),
-        ("https://b23.tv/xyz", "bilibili"),
+        (
+            "https://youtube.com/watch?v=abc123",
+            "youtube",
+            "https://youtube.com/watch?v=abc123",
+        ),
+        (
+            "https://m.youtube.com/watch?v=abc123",
+            "youtube",
+            "https://m.youtube.com/watch?v=abc123",
+        ),
+        ("https://youtu.be/abc123", "youtube", "https://youtu.be/abc123"),
+        (
+            "https://www.bilibili.com/video/BV1abc?p=2",
+            "bilibili",
+            "https://www.bilibili.com/video/BV1abc/?p=2",
+        ),
+        (
+            "https://space.bilibili.com/123/video/BV1abc",
+            "bilibili",
+            "https://space.bilibili.com/123/video/BV1abc",
+        ),
+        ("https://b23.tv/xyz", "bilibili", "https://b23.tv/xyz"),
     ],
 )
-def test_supported_urls_are_dispatched_to_real_adapters(url: str, platform: str):
+def test_supported_urls_are_dispatched_to_real_adapters(
+    url: str, platform: str, request_url: str
+):
     runner = FakeRunner()
     result = SourceClient(runner).fetch(url)
 
     assert result.metadata.platform == platform
-    assert runner.calls[0][0] == url
+    assert runner.calls[0][0] == request_url
     if platform == "youtube":
         assert runner.calls[0][1]["extractor_retries"] == 3
     else:
-        assert runner.calls[0][1]["http_headers"]["Referer"].startswith(
-            "https://www.bilibili.com"
+        # Preserve yt-dlp's complete, current browser headers instead of
+        # replacing them with a partial or stale custom mapping.
+        assert "http_headers" not in runner.calls[0][1]
+
+
+def test_bilibili_http_412_is_retried_with_bounded_backoff():
+    class FlakyRunner(FakeRunner):
+        def run(self, url, options, *, download):
+            if len(self.calls) < 2:
+                self.calls.append((url, dict(options), download))
+                raise RuntimeError("HTTP Error 412: Precondition Failed")
+            return super().run(url, options, download=download)
+
+    runner = FlakyRunner()
+    delays: list[float] = []
+
+    result = SourceClient(runner, sleeper=delays.append).fetch(
+        "https://www.bilibili.com/video/BV1abc"
+    )
+
+    assert result.metadata.platform == "bilibili"
+    assert len(runner.calls) == 3
+    assert delays == [0.5, 1.5]
+
+
+def test_non_transient_bilibili_error_is_not_retried():
+    runner = FakeRunner(failure=RuntimeError("HTTP Error 403: Forbidden"))
+    delays: list[float] = []
+
+    with pytest.raises(SourceFetchError, match="403"):
+        SourceClient(runner, sleeper=delays.append).fetch(
+            "https://www.bilibili.com/video/BV1abc"
         )
+
+    assert len(runner.calls) == 1
+    assert delays == []
 
 
 @pytest.mark.parametrize(

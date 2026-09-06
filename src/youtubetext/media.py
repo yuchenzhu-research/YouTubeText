@@ -9,13 +9,14 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .sources._adapter import resolve_adapter
+from .sources._adapter import resolve_adapter, run_with_platform_retries
 
 
 class MediaPurpose(str, Enum):
@@ -50,8 +51,14 @@ def locate_ffmpeg() -> Path:
 class MediaDownloader:
     """yt-dlp adapter that downloads exactly one temporary media artifact."""
 
-    def __init__(self, runner: Callable[[str, Mapping], object] | None = None):
+    def __init__(
+        self,
+        runner: Callable[[str, Mapping], object] | None = None,
+        *,
+        sleeper: Callable[[float], None] = time.sleep,
+    ):
         self._runner = runner
+        self._sleeper = sleeper
 
     @staticmethod
     def options_for(purpose: MediaPurpose, output_template: Path) -> dict:
@@ -82,23 +89,33 @@ class MediaDownloader:
         directory.mkdir(parents=True, exist_ok=True)
         stem = f"media_{uuid.uuid4().hex[:12]}"
         template = directory / f"{stem}.%(ext)s"
+        adapter = resolve_adapter(url)
+        request_url = adapter.request_url(url)
         options = self.options_for(purpose, template)
-        options.update(resolve_adapter(url).yt_dlp_options())
+        options.update(adapter.yt_dlp_options())
+
+        def run_download() -> object:
+            if self._runner is not None:
+                return self._runner(request_url, options)
+
+            import yt_dlp
+
+            with yt_dlp.YoutubeDL(options) as downloader:
+                return downloader.extract_info(request_url, download=True)
 
         try:
-            if self._runner is not None:
-                returned = self._runner(url, options)
-                if isinstance(returned, (str, Path)):
-                    path = Path(returned)
-                    if path.is_file():
-                        return path.resolve()
-            else:
-                import yt_dlp
-
-                with yt_dlp.YoutubeDL(options) as downloader:
-                    downloader.extract_info(url, download=True)
+            returned = run_with_platform_retries(
+                adapter,
+                run_download,
+                sleep=self._sleeper,
+            )
         except Exception as exc:
             raise MediaDownloadError(str(exc)) from exc
+
+        if isinstance(returned, (str, Path)):
+            path = Path(returned)
+            if path.is_file():
+                return path.resolve()
 
         candidates = [
             path
