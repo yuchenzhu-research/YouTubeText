@@ -67,6 +67,7 @@ class SourceClient:
         url: str,
         *,
         preferred_languages: Sequence[str] = (),
+        include_subtitles: bool = True,
     ) -> SourceResult:
         adapter = resolve_adapter(url)
         try:
@@ -82,10 +83,14 @@ class SourceClient:
 
         try:
             metadata = _metadata(url, adapter, info)
-            selected = _select_subtitle(
-                info,
-                adapter,
-                tuple(preferred_languages),
+            selected = (
+                _select_subtitle(
+                    info,
+                    adapter,
+                    tuple(preferred_languages),
+                )
+                if include_subtitles
+                else None
             )
         except Exception as exc:
             raise SourceFetchError("metadata", str(exc) or type(exc).__name__) from exc

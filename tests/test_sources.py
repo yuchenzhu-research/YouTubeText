@@ -143,6 +143,22 @@ def test_metadata_without_subtitles_is_a_successful_source_result():
     assert runner.calls[0][2] is False
 
 
+def test_metadata_only_mode_never_downloads_an_advertised_caption():
+    runner = FakeRunner(
+        youtube_info(subtitles={"en": [{"ext": "vtt"}]}),
+        subtitle=VTT,
+    )
+
+    result = SourceClient(runner).fetch(
+        "https://youtu.be/abc123",
+        include_subtitles=False,
+    )
+
+    assert result.subtitle is None
+    assert len(runner.calls) == 1
+    assert runner.calls[0][2] is False
+
+
 def test_manual_captions_are_selected_and_cleaned():
     rolling_vtt = """WEBVTT
 
