@@ -59,6 +59,7 @@ class MediaDownloader:
             "outtmpl": str(output_template),
             "noplaylist": True,
             "quiet": True,
+            "noprogress": True,
             "no_warnings": False,
             "retries": 5,
             "fragment_retries": 5,

@@ -94,7 +94,7 @@ def test_supported_urls_are_dispatched_to_real_adapters(url: str, platform: str)
     assert result.metadata.platform == platform
     assert runner.calls[0][0] == url
     if platform == "youtube":
-        assert "youtube" in runner.calls[0][1]["extractor_args"]
+        assert runner.calls[0][1]["extractor_retries"] == 3
     else:
         assert runner.calls[0][1]["http_headers"]["Referer"].startswith(
             "https://www.bilibili.com"

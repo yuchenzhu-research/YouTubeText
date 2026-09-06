@@ -29,15 +29,8 @@ class YouTubeAdapter(PlatformAdapter):
         return _is_host(host, "youtube.com") or _is_host(host, "youtu.be")
 
     def yt_dlp_options(self) -> dict[str, Any]:
-        # Android clients are a useful first path on macOS because subtitle
-        # metadata does not depend on a browser JavaScript runtime.
         return {
             "socket_timeout": 30,
             "retries": 3,
             "extractor_retries": 3,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android_vr", "android", "default"],
-                }
-            },
         }
