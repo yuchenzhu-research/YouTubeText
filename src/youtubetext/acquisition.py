@@ -450,16 +450,57 @@ def _ocr_is_usable(
 ) -> bool:
     if not segments:
         return False
-    characters = sum(len(normalize_caption(segment.text)) for segment in segments)
-    if not duration_seconds or duration_seconds <= 30:
+    normalized = [normalize_caption(segment.text) for segment in segments]
+    characters = sum(len(text) for text in normalized)
+    duration = max(0.0, float(duration_seconds or 0.0))
+    if not duration or duration <= 10:
         return characters >= 4
+    covered_ratio = _covered_duration(segments, duration) / duration
+    if duration <= 30:
+        return (
+            len(segments) >= 2
+            and len(set(normalized)) >= 2
+            and characters >= 12
+            and covered_ratio >= 0.2
+        )
     minimum_characters = max(60, round(duration_seconds / 60 * 15))
-    coverage = (segments[-1].end_seconds - segments[0].start_seconds) / duration_seconds
+    unique_ratio = len(set(normalized)) / len(normalized)
     return (
         len(segments) >= 5
         and characters >= minimum_characters
-        and coverage >= 0.4
+        and unique_ratio >= 0.4
+        and covered_ratio >= 0.35
     )
+
+
+def _covered_duration(
+    segments: Sequence[TranscriptSegment],
+    duration_seconds: float,
+) -> float:
+    intervals = sorted(
+        (
+            max(0.0, segment.start_seconds),
+            min(duration_seconds, segment.end_seconds),
+        )
+        for segment in segments
+        if segment.start_seconds < duration_seconds and segment.end_seconds > 0
+    )
+    total = 0.0
+    active_start = 0.0
+    active_end = 0.0
+    for start, end in intervals:
+        if end <= start:
+            continue
+        if active_end <= active_start:
+            active_start, active_end = start, end
+        elif start <= active_end:
+            active_end = max(active_end, end)
+        else:
+            total += active_end - active_start
+            active_start, active_end = start, end
+    if active_end > active_start:
+        total += active_end - active_start
+    return total
 
 
 def _ocr_transcript(
@@ -541,16 +582,24 @@ def merge_ocr_and_asr(
     ocr_segments: Sequence[TranscriptSegment],
     asr_segments: Sequence[TranscriptSegment],
 ) -> tuple[TranscriptSegment, ...]:
-    """Prefer visible captions and use speech segments only in uncovered gaps."""
+    """Prefer visible captions without discarding speech that spans a real gap."""
 
     merged = list(ocr_segments)
     for speech in asr_segments:
-        midpoint = (speech.start_seconds + speech.end_seconds) / 2
-        covered = any(
-            visible.start_seconds - 0.5 <= midpoint <= visible.end_seconds + 0.5
+        duration = speech.end_seconds - speech.start_seconds
+        overlaps = (
+            TranscriptSegment(
+                max(speech.start_seconds, visible.start_seconds),
+                min(speech.end_seconds, visible.end_seconds),
+                visible.text,
+            )
             for visible in ocr_segments
+            if max(speech.start_seconds, visible.start_seconds)
+            < min(speech.end_seconds, visible.end_seconds)
         )
-        if not covered:
+        covered = _covered_duration(tuple(overlaps), speech.end_seconds)
+        coverage = covered / duration if duration > 0 else 0.0
+        if coverage < 0.8:
             merged.append(speech)
     merged.sort(key=lambda segment: (segment.start_seconds, segment.end_seconds))
     return tuple(merged)

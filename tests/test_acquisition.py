@@ -8,7 +8,9 @@ from youtubetext.acquisition import (
     TranscriptAcquisitionError,
     TranscriptPipeline,
     _detected_ocr_language,
+    _ocr_is_usable,
     _ocr_languages,
+    merge_ocr_and_asr,
 )
 from youtubetext.asr import ASRResult
 from youtubetext.domain import (
@@ -300,3 +302,32 @@ def test_auto_ocr_language_reports_the_detected_chinese_script():
     neutral_meta = SourceMetadata(URL, "youtube", "video", "Test video")
     assert _detected_ocr_language("auto", neutral_meta, simplified) == "zh-Hans"
     assert _detected_ocr_language("es", neutral_meta, traditional) == "es"
+
+
+def test_ocr_quality_rejects_static_and_sparse_watermarks():
+    assert not _ocr_is_usable((TranscriptSegment(0, 30, "LOGO"),), 30)
+    sparse = tuple(
+        TranscriptSegment(second, second + 1, f"WATERMARK {index % 2}")
+        for index, second in enumerate((0, 100, 200, 300, 500))
+    )
+    assert not _ocr_is_usable(sparse, 600)
+    assert _ocr_is_usable((TranscriptSegment(0, 4, "短视频字幕"),), 5)
+
+
+def test_hybrid_keeps_asr_segment_that_spans_both_sides_of_ocr():
+    visible = (TranscriptSegment(4, 6, "visible caption"),)
+    speech = (TranscriptSegment(0, 10, "speech across the gap"),)
+
+    merged = merge_ocr_and_asr(visible, speech)
+
+    assert [segment.text for segment in merged] == [
+        "speech across the gap",
+        "visible caption",
+    ]
+
+
+def test_hybrid_drops_asr_segment_almost_fully_covered_by_ocr():
+    visible = (TranscriptSegment(0, 10, "visible caption"),)
+    speech = (TranscriptSegment(1, 9, "duplicate speech"),)
+
+    assert merge_ocr_and_asr(visible, speech) == visible
