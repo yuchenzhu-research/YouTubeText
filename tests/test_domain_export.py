@@ -8,7 +8,13 @@ from youtubetext.domain import (
     TranscriptMethod,
     TranscriptSegment,
 )
-from youtubetext.export import _atomic_write, export_transcript, render_markdown, render_text
+from youtubetext.export import (
+    _atomic_write,
+    _atomic_write_many,
+    export_transcript,
+    render_markdown,
+    render_text,
+)
 
 
 def sample_transcript() -> Transcript:
@@ -68,4 +74,26 @@ def test_repeated_atomic_writes_leave_no_shared_partial_file(tmp_path):
     _atomic_write(destination, "second")
 
     assert destination.read_text(encoding="utf-8") == "second"
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_grouped_write_failure_keeps_all_previous_outputs(tmp_path, monkeypatch):
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("old first", encoding="utf-8")
+    second.write_text("old second", encoding="utf-8")
+    original_write_text = type(first).write_text
+
+    def fail_second_staging_write(path, content, **kwargs):
+        if path.name.startswith(".second.txt."):
+            raise OSError("disk full")
+        return original_write_text(path, content, **kwargs)
+
+    monkeypatch.setattr(type(first), "write_text", fail_second_staging_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        _atomic_write_many(((first, "new first"), (second, "new second")))
+
+    assert first.read_text(encoding="utf-8") == "old first"
+    assert second.read_text(encoding="utf-8") == "old second"
     assert not list(tmp_path.glob("*.partial"))

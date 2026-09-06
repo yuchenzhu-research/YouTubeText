@@ -74,12 +74,26 @@ def metadata_payload(transcript: Transcript) -> dict:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    _atomic_write_many(((path, content),))
+
+
+def _atomic_write_many(outputs: tuple[tuple[Path, str], ...]) -> None:
+    staged: list[tuple[Path, Path]] = []
+    for path, content in outputs:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+        staged.append((temporary, path))
+        try:
+            temporary.write_text(content, encoding="utf-8")
+        except Exception:
+            for candidate, _destination in staged:
+                candidate.unlink(missing_ok=True)
+            raise
     try:
-        temporary.write_text(content, encoding="utf-8")
-        temporary.replace(path)
+        for temporary, path in staged:
+            temporary.replace(path)
     finally:
-        temporary.unlink(missing_ok=True)
+        for temporary, _path in staged:
+            temporary.unlink(missing_ok=True)
 
 
 def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:
@@ -92,10 +106,19 @@ def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:
     markdown = directory / "transcript.md"
     text = directory / "transcript.txt"
     metadata = directory / "metadata.json"
-    _atomic_write(markdown, render_markdown(transcript))
-    _atomic_write(text, render_text(transcript))
-    _atomic_write(
-        metadata,
-        json.dumps(metadata_payload(transcript), ensure_ascii=False, indent=2) + "\n",
+    _atomic_write_many(
+        (
+            (markdown, render_markdown(transcript)),
+            (text, render_text(transcript)),
+            (
+                metadata,
+                json.dumps(
+                    metadata_payload(transcript),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+            ),
+        )
     )
     return OutputFiles(directory=directory, markdown=markdown, text=text, metadata=metadata)
