@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "youtubetext"
+version = "0.1.0"
+description = "Turn YouTube and Bilibili videos into clean transcripts on macOS."
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "click>=8.1,<9",
+  "platformdirs>=4.3,<5",
+  "rich>=13.9,<15",
+  "yt-dlp>=2026.3.17",
+  "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[project.scripts]
+youtubetext = "youtubetext.cli:main"
+
+[project.urls]
+Repository = "https://github.com/yuchenzhu-research/YouTubeText"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/youtubetext"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
