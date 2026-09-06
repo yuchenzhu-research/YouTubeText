@@ -14,6 +14,7 @@ YouTubeText 是一款面向 Apple Silicon Mac 的终端工具，可将 YouTube �
 - 没有可用硬字幕时，使用本地 MLX Whisper 识别语音。
 - 输出 `transcript.md`、`transcript.txt` 和 `metadata.json`。
 - 每个 URL 独立成功或失败，一个任务出错不会取消其他任务。
+- 按 `Ctrl-C` 会终止本次运行中的下载与本地识别，并清理临时媒体。
 
 ## 处理流程
 
@@ -27,7 +28,7 @@ URL 队列
 ```
 
 平台字幕路径不会下载视频。OCR 和 Whisper 所需的媒体只保存在系统缓存中的临时任务
-目录，任务完成或失败后会自动删除。
+目录，任务完成、失败或被用户中断后会自动删除。
 
 ## 系统要求
 
