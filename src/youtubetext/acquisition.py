@@ -417,7 +417,12 @@ def _ocr_languages(language: str, metadata: SourceMetadata) -> tuple[str, ...]:
         return explicit
     context = f"{metadata.title} {metadata.author}"
     has_cjk = any("\u3400" <= character <= "\u9fff" for character in context)
-    if has_cjk or metadata.platform == "bilibili":
+    script = _detected_ocr_language("auto", metadata, ())
+    if script == "zh-Hant":
+        return ("zh-Hant", "zh-Hans", "en-US", "es-ES")
+    if script == "zh-Hans" or metadata.platform == "bilibili":
+        return ("zh-Hans", "zh-Hant", "en-US", "es-ES")
+    if has_cjk:
         return ("zh-Hant", "zh-Hans", "en-US", "es-ES")
     return ("en-US", "zh-Hant", "zh-Hans", "es-ES")
 
@@ -488,6 +493,8 @@ def _detected_ocr_language(
         "爱": "愛",
         "边": "邊",
         "变": "變",
+        "场": "場",
+        "处": "處",
         "发": "發",
         "个": "個",
         "国": "國",

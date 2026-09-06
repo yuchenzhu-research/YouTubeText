@@ -53,10 +53,13 @@ xcode-select --install
 ## 安装
 
 ```bash
-git clone git@github.com:yuchenzhu-research/YouTubeText.git
+git clone https://github.com/yuchenzhu-research/YouTubeText.git
 cd YouTubeText
 ./scripts/install.sh
 ```
+
+已经配置 GitHub SSH Key 时，也可以使用
+`git@github.com:yuchenzhu-research/YouTubeText.git`。
 
 安装脚本会创建仓库内的 `.venv`、安装 Python 依赖并编译 Apple Vision OCR
 辅助程序。它不会使用 `sudo`，也不会自动安装 Homebrew。

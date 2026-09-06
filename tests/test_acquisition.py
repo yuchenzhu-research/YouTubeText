@@ -267,6 +267,17 @@ def test_auto_ocr_language_prioritizes_traditional_chinese_for_cjk_metadata():
         "es-ES",
     )
 
+    simplified_bilibili = SourceMetadata(
+        "https://www.bilibili.com/video/BV1test",
+        "bilibili",
+        "BV1test",
+        "视频发布现场",
+    )
+    assert _ocr_languages("auto", simplified_bilibili)[:2] == (
+        "zh-Hans",
+        "zh-Hant",
+    )
+
 
 def test_auto_ocr_language_reports_the_detected_chinese_script():
     traditional = (TranscriptSegment(0, 1, "這個國家發生變化"),)
