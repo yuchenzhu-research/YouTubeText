@@ -7,7 +7,6 @@ construction stay behind that small interface.
 from __future__ import annotations
 
 import asyncio
-import math
 import shutil
 import subprocess
 import uuid
@@ -15,6 +14,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping
+
+from .sources._adapter import resolve_adapter
 
 
 class MediaPurpose(str, Enum):
@@ -36,7 +37,7 @@ def sampling_interval(duration_seconds: float, *, max_frames: int = 2400) -> flo
     duration = max(0.0, float(duration_seconds or 0.0))
     if not duration:
         return 1.0
-    return float(max(1, math.ceil(duration / max(1, max_frames))))
+    return max(1.0, duration / max(1, max_frames))
 
 
 def locate_ffmpeg() -> Path:
@@ -70,7 +71,8 @@ class MediaDownloader:
             "format": (
                 "best[height<=480][vcodec!=none][acodec!=none]/"
                 "best[height<=720][vcodec!=none][acodec!=none]/"
-                "bestvideo[height<=480]+bestaudio/best"
+                "bestvideo[height<=480]+bestaudio/"
+                "bestvideo[height<=720]+bestaudio"
             ),
             "merge_output_format": "mp4",
         }
@@ -80,6 +82,7 @@ class MediaDownloader:
         stem = f"media_{uuid.uuid4().hex[:12]}"
         template = directory / f"{stem}.%(ext)s"
         options = self.options_for(purpose, template)
+        options.update(resolve_adapter(url).yt_dlp_options())
 
         try:
             if self._runner is not None:
@@ -147,6 +150,8 @@ class FrameSampler:
                 "-an",
                 "-vf",
                 filters,
+                "-frames:v",
+                str(self._max_frames),
                 "-q:v",
                 "3",
                 str(output.resolve()),
