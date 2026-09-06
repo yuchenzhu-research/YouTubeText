@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,7 @@ import click
 from rich.console import Console
 
 from . import __version__
+from ._supervisor import RUN_TEMP_ENV, SUPERVISED_ENV, run_supervised
 from .acquisition import TranscriptPipeline
 from .doctor import DoctorReport, diagnose
 from .domain import ProcessingMode, TaskOptions, TaskResult
@@ -135,7 +138,7 @@ def main(
             whisper_model=selected_model,
             output_dir=output_dir,
         )
-        engine = YouTubeTextEngine(TranscriptPipeline(), plan)
+        engine = YouTubeTextEngine(_transcript_pipeline(), plan)
         console = Console(stderr=True, highlight=False)
         progress = discard_progress if json_output else _progress_sink(console)
         results = asyncio.run(engine.process(list(urls), options, progress=progress))
@@ -160,6 +163,38 @@ def main(
         _render_results(results, console)
     if not succeeded:
         raise click.exceptions.Exit(1)
+
+
+def requires_supervised_worker(arguments: tuple[str, ...]) -> bool:
+    """Return whether command-line arguments describe URL processing work."""
+
+    if any(argument in {"-h", "--help", "--version"} for argument in arguments):
+        return False
+
+    parsed_arguments = list(arguments)
+    try:
+        context = main.make_context(
+            "youtubetext",
+            parsed_arguments,
+            resilient_parsing=True,
+        )
+    except click.ClickException:
+        return False
+    try:
+        urls = tuple(context.params.get("urls") or ())
+        doctor_mode = bool(context.params.get("doctor_mode"))
+    finally:
+        context.close()
+
+    doctor_command = len(urls) == 1 and urls[0].casefold() == "doctor"
+    return bool(urls) and not doctor_mode and not doctor_command
+
+
+def _transcript_pipeline() -> TranscriptPipeline:
+    run_root = os.environ.get(RUN_TEMP_ENV, "").strip()
+    if run_root:
+        return TranscriptPipeline(temp_root=Path(run_root))
+    return TranscriptPipeline()
 
 
 def _run_doctor(*, json_output: bool) -> None:
@@ -251,5 +286,20 @@ def _fatal_error(exc: Exception, *, json_output: bool) -> None:
     raise click.ClickException(detail)
 
 
+def entrypoint() -> None:
+    """Run lightweight commands inline and isolate URL work in a child process."""
+
+    arguments = tuple(sys.argv[1:])
+    already_supervised = os.environ.get(SUPERVISED_ENV) == "1"
+    if already_supervised or not requires_supervised_worker(arguments):
+        main()
+        return
+
+    exit_code = run_supervised(
+        [sys.executable, "-m", "youtubetext.cli", *arguments]
+    )
+    raise SystemExit(exit_code)
+
+
 if __name__ == "__main__":  # pragma: no cover
-    main()
+    entrypoint()

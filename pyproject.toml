@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-youtubetext = "youtubetext.cli:main"
+youtubetext = "youtubetext.cli:entrypoint"
 
 [project.urls]
 Repository = "https://github.com/yuchenzhu-research/YouTubeText"
@@ -35,4 +35,3 @@ packages = ["src/youtubetext"]
 addopts = "-q"
 asyncio_mode = "auto"
 testpaths = ["tests"]
-

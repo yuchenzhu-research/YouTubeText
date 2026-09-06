@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import sys
+import tomllib
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 import youtubetext.cli as cli
+from youtubetext._supervisor import RUN_TEMP_ENV
 from youtubetext.doctor import CachedModelStatus, DiagnosticCheck, DoctorReport
 from youtubetext.domain import (
     OutputFiles,
@@ -85,6 +89,91 @@ def test_help_and_version_do_not_require_a_url():
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
     assert "0.1.0" in version_result.output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ((URL_1,), True),
+        ((URL_1, URL_2, "--json"), True),
+        ((), False),
+        (("--help",), False),
+        (("-h",), False),
+        (("--version",), False),
+        (("doctor",), False),
+        (("--json", "doctor"), False),
+        (("--doctor", "--json"), False),
+    ],
+)
+def test_only_url_work_requires_a_supervised_worker(arguments, expected):
+    assert cli.requires_supervised_worker(arguments) is expected
+
+
+def test_supervised_worker_injects_its_run_temp_root(monkeypatch, tmp_path):
+    run_root = tmp_path / "supervised-run"
+    captured: dict[str, object] = {}
+
+    def pipeline_factory(**options):
+        captured.update(options)
+        return object()
+
+    install_fake_runtime(monkeypatch, [successful_result(URL_1, tmp_path)])
+    monkeypatch.setattr(cli, "TranscriptPipeline", pipeline_factory)
+    monkeypatch.setenv(RUN_TEMP_ENV, str(run_root))
+
+    result = CliRunner().invoke(cli.main, [URL_1])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"temp_root": run_root}
+
+
+def test_command_entrypoint_preserves_the_supervised_worker_exit_code(monkeypatch):
+    captured: list[list[str]] = []
+
+    def supervise(command):
+        captured.append(list(command))
+        return 7
+
+    monkeypatch.delenv(cli.SUPERVISED_ENV, raising=False)
+    monkeypatch.setattr(cli, "run_supervised", supervise)
+    monkeypatch.setattr(sys, "argv", ["youtubetext", URL_1, "--json"])
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.entrypoint()
+
+    assert stopped.value.code == 7
+    assert captured == [
+        [sys.executable, "-m", "youtubetext.cli", URL_1, "--json"]
+    ]
+
+
+@pytest.mark.parametrize("arguments", [("--help",), ("--version",), ("doctor",)])
+def test_command_entrypoint_runs_lightweight_commands_inline(monkeypatch, arguments):
+    report = DoctorReport(
+        checks=(DiagnosticCheck("macos", True, True, "macOS detected"),),
+        whisper_models=(),
+    )
+    monkeypatch.delenv(cli.SUPERVISED_ENV, raising=False)
+    monkeypatch.setattr(cli, "diagnose", lambda: report)
+    monkeypatch.setattr(
+        cli,
+        "run_supervised",
+        lambda _command: (_ for _ in ()).throw(AssertionError("must stay inline")),
+    )
+    monkeypatch.setattr(sys, "argv", ["youtubetext", *arguments])
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.entrypoint()
+
+    assert stopped.value.code == 0
+
+
+def test_installed_command_uses_the_supervising_entrypoint():
+    project = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert project["project"]["scripts"]["youtubetext"] == "youtubetext.cli:entrypoint"
 
 
 def test_missing_url_is_a_usage_error():
