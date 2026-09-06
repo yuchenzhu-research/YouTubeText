@@ -7,6 +7,10 @@ from youtubetext.asr.models import MODELS, WhisperModel
 from youtubetext.doctor import Doctor
 
 
+def working_vision(_path: Path) -> tuple[bool, str]:
+    return True, "Vision protocol is ready"
+
+
 class FakeCache:
     def __init__(self, root: Path, cached: set[str] | None = None) -> None:
         self.root = root
@@ -36,6 +40,7 @@ def test_ready_report_contains_paths_versions_and_cached_models(tmp_path: Path) 
         machine=lambda: "arm64",
         which=lambda command: "/opt/homebrew/bin/ffmpeg" if command == "ffmpeg" else None,
         vision_binary=lambda: Path("/usr/local/bin/youtubetext-vision-ocr"),
+        vision_probe=working_vision,
         import_module=lambda name: SimpleNamespace(__version__="0.4.3"),
         model_cache=cache,
     )
@@ -91,6 +96,7 @@ def test_empty_whisper_cache_is_nonfatal_and_never_downloads(tmp_path: Path) -> 
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
+        vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
         model_cache=cache,
     ).run()
@@ -107,6 +113,7 @@ def test_report_serializes_to_json_ready_primitives(tmp_path: Path) -> None:
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
+        vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
         model_cache=FakeCache(tmp_path, {"base", "large-v3-turbo"}),
     ).run()
@@ -137,6 +144,7 @@ def test_unknown_check_key_raises_key_error(tmp_path: Path) -> None:
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
+        vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
         model_cache=FakeCache(tmp_path),
     ).run()
@@ -168,6 +176,7 @@ def test_doctor_reports_actual_huggingface_snapshot_path(tmp_path: Path) -> None
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
+        vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
         model_cache=cache,
     ).run()
@@ -175,3 +184,19 @@ def test_doctor_reports_actual_huggingface_snapshot_path(tmp_path: Path) -> None
     turbo = next(item for item in report.whisper_models if item.name == "large-v3-turbo")
     assert turbo.cached
     assert turbo.directory == snapshot
+
+
+def test_broken_vision_protocol_makes_doctor_not_ready(tmp_path: Path) -> None:
+    report = Doctor(
+        system=lambda: "Darwin",
+        machine=lambda: "arm64",
+        which=lambda _command: "/usr/bin/ffmpeg",
+        vision_binary=lambda: Path("/usr/bin/broken-helper"),
+        vision_probe=lambda _path: (False, "Vision returned invalid JSON"),
+        import_module=lambda _name: SimpleNamespace(),
+        model_cache=FakeCache(tmp_path),
+    ).run()
+
+    assert not report.ready
+    assert not report.check("vision_ocr").ok
+    assert "invalid JSON" in report.check("vision_ocr").detail

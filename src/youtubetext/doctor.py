@@ -1,4 +1,4 @@
-"""Offline environment diagnostics for the future ``youtubetext doctor`` CLI.
+"""Offline environment diagnostics for the ``youtubetext doctor`` command.
 
 The doctor only observes local state.  In particular, inspecting Whisper model
 caches never calls ``ensure`` and therefore never downloads model weights.
@@ -6,8 +6,10 @@ caches never calls ``ensure`` and therefore never downloads model weights.
 from __future__ import annotations
 
 import importlib
+import json
 import platform
 import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,6 +108,7 @@ class Doctor:
         machine: Callable[[], str] | None = None,
         which: Callable[[str], str | None] | None = None,
         vision_binary: Callable[[], Path | None] | None = None,
+        vision_probe: Callable[[Path], tuple[bool, str]] | None = None,
         import_module: Callable[[str], ModuleType | Any] | None = None,
         model_cache: _ModelCacheProbe | None = None,
     ) -> None:
@@ -113,6 +116,7 @@ class Doctor:
         self._machine = machine or platform.machine
         self._which = which or shutil.which
         self._vision_binary = vision_binary or find_vision_ocr_binary
+        self._vision_probe = vision_probe or _probe_vision_binary
         self._import_module = import_module or importlib.import_module
         self._model_cache = model_cache or WhisperModelCache()
 
@@ -155,16 +159,21 @@ class Doctor:
         )
 
         vision = _path_from_probe(self._vision_binary())
+        if vision is None:
+            vision_ok = False
+            vision_detail = "Swift Apple Vision OCR helper is not built"
+        else:
+            try:
+                vision_ok, vision_detail = self._vision_probe(vision)
+            except Exception as exc:
+                vision_ok = False
+                vision_detail = f"Swift Apple Vision OCR helper failed: {_one_line_error(exc)}"
         checks.append(
             DiagnosticCheck(
                 key="vision_ocr",
-                ok=vision is not None,
+                ok=vision_ok,
                 required=True,
-                detail=(
-                    "Swift Apple Vision OCR helper is available"
-                    if vision
-                    else "Swift Apple Vision OCR helper is not built"
-                ),
+                detail=vision_detail,
                 path=vision,
             )
         )
@@ -241,3 +250,42 @@ def _path_from_probe(value: str | Path | None) -> Path | None:
 def _one_line_error(exc: Exception) -> str:
     message = " ".join(str(exc).split()) or exc.__class__.__name__
     return f"{exc.__class__.__name__}: {message}"[:300]
+
+
+def _probe_vision_binary(binary: Path) -> tuple[bool, str]:
+    request = json.dumps(
+        {
+            "images": ["/nonexistent/youtubetext-doctor-probe.jpg"],
+            "languages": ["en-US"],
+            "accurate": False,
+            "minimumTextHeight": 0.01,
+        }
+    )
+    try:
+        completed = subprocess.run(
+            [str(binary)],
+            input=request,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"Swift Apple Vision OCR helper could not run: {_one_line_error(exc)}"
+    if completed.returncode != 0:
+        detail = " ".join((completed.stderr or completed.stdout).split())
+        return False, f"Swift Apple Vision OCR helper exited with an error: {detail[:200]}"
+    try:
+        response = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return False, "Swift Apple Vision OCR helper returned invalid JSON"
+    if not isinstance(response, dict):
+        return False, "Swift Apple Vision OCR helper returned an invalid response"
+    frames = response.get("frames")
+    if (
+        response.get("engine") != "apple-vision"
+        or not isinstance(frames, list)
+        or len(frames) != 1
+    ):
+        return False, "Swift Apple Vision OCR helper returned an invalid response"
+    return True, "Swift Apple Vision OCR helper passed its protocol check"
