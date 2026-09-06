@@ -62,7 +62,7 @@ class MLXWhisperASR:
             raise FileNotFoundError(f"audio file does not exist: {path}")
 
         requested_language = (language or "auto").strip()
-        engine_language = None if requested_language.lower() == "auto" else requested_language
+        engine_language = _whisper_language_code(requested_language)
         duration = _safe_duration(self._duration_probe, path)
         clip_end = _effective_clip_end(
             self._trailing_silence_probe,
@@ -171,6 +171,15 @@ def _safe_duration(probe: DurationProbe, path: Path) -> float | None:
     except Exception:
         return None
     return value if math.isfinite(value) and value > 0 else None
+
+
+def _whisper_language_code(language: str | None) -> str | None:
+    """Reduce BCP-47/underscore choices to Whisper's base language code."""
+
+    normalized = (language or "auto").strip().replace("_", "-").casefold()
+    if not normalized or normalized == "auto":
+        return None
+    return normalized.split("-", 1)[0]
 
 
 def _ffprobe_duration(path: Path) -> float | None:

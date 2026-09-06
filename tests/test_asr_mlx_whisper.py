@@ -75,6 +75,38 @@ def test_explicit_language_is_passed_to_engine(tmp_path: Path) -> None:
     assert result.segments[0].start_seconds == 0
 
 
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        ("auto", None),
+        ("en", "en"),
+        ("es", "es"),
+        ("en-US", "en"),
+        ("zh-Hant", "zh"),
+        ("zh_Hans", "zh"),
+    ],
+)
+def test_bcp47_language_is_reduced_to_whisper_base_code(
+    tmp_path: Path,
+    requested: str,
+    expected: str | None,
+) -> None:
+    audio = tmp_path / "speech.wav"
+    audio.touch()
+    seen: dict[str, Any] = {}
+
+    def fake_transcribe(_path: str, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {"text": "transcript"}
+
+    MLXWhisperASR(
+        transcribe_callable=fake_transcribe,
+        duration_probe=lambda _path: None,
+    ).transcribe(audio, language=requested)
+
+    assert seen["language"] == expected
+
+
 def test_missing_audio_fails_before_engine_call(tmp_path: Path) -> None:
     called = False
 
@@ -137,6 +169,7 @@ def test_known_duration_bounds_decode_and_normalized_segments(tmp_path: Path) ->
     ).transcribe(audio, language="zh-Hant")
 
     assert call["clip_timestamps"] == [0.0, 10.0]
+    assert call["language"] == "zh"
     assert call["word_timestamps"] is True
     assert call["hallucination_silence_threshold"] == 2.0
     assert [segment.text for segment in result.segments] == ["valid", "clipped"]
