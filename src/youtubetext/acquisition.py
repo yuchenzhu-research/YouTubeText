@@ -43,6 +43,7 @@ class SourceProvider(Protocol):
         *,
         preferred_languages: Sequence[str] = (),
         include_subtitles: bool = True,
+        strict_subtitles: bool = True,
     ) -> SourceResult: ...
 
 
@@ -132,6 +133,7 @@ class TranscriptPipeline:
                 url,
                 preferred_languages=caption_languages,
                 include_subtitles=include_subtitles,
+                strict_subtitles=options.mode is ProcessingMode.CAPTIONS,
             )
         await progress(
             ProgressEvent(
@@ -159,6 +161,7 @@ class TranscriptPipeline:
                 language=source.subtitle.language,
                 method=TranscriptMethod.PLATFORM_CAPTIONS,
                 segments=source.subtitle.segments,
+                warnings=source.warnings,
             )
         if options.mode is ProcessingMode.CAPTIONS:
             raise TranscriptAcquisitionError("no platform caption track is available")
@@ -220,7 +223,7 @@ class TranscriptPipeline:
                     source.metadata,
                     options.language,
                     ocr_segments,
-                    warnings=ocr_warnings,
+                    warnings=(*source.warnings, *ocr_warnings),
                 )
 
             if options.mode is ProcessingMode.AUTO and usable_ocr:
@@ -228,7 +231,7 @@ class TranscriptPipeline:
                     source.metadata,
                     options.language,
                     ocr_segments,
-                    warnings=ocr_warnings,
+                    warnings=(*source.warnings, *ocr_warnings),
                 )
 
             if video_path is None:
@@ -257,10 +260,11 @@ class TranscriptPipeline:
                     language=_resolved_language(options.language, asr_result.language),
                     method=TranscriptMethod.OCR_WHISPER,
                     segments=merged,
-                    warnings=ocr_warnings,
+                    warnings=(*source.warnings, *ocr_warnings),
                 )
 
             warnings = (
+                *source.warnings,
                 *ocr_warnings,
                 "Apple Vision OCR found no usable burned-in captions; used Whisper.",
             )

@@ -29,15 +29,23 @@ META = SourceMetadata(URL, "youtube", "video", "文钊测试视频", duration_se
 
 
 class FakeSources:
-    def __init__(self, subtitle: SubtitleTrack | None = None):
+    def __init__(self, subtitle: SubtitleTrack | None = None, warnings=()):
         self.subtitle = subtitle
+        self.warnings = tuple(warnings)
         self.languages = ()
         self.include_subtitles = None
 
-    def fetch(self, url, *, preferred_languages=(), include_subtitles=True):
+    def fetch(
+        self,
+        url,
+        *,
+        preferred_languages=(),
+        include_subtitles=True,
+        strict_subtitles=True,
+    ):
         self.languages = tuple(preferred_languages)
         self.include_subtitles = include_subtitles
-        return SourceResult(META, self.subtitle)
+        return SourceResult(META, self.subtitle, self.warnings)
 
 
 class FakeMedia:
@@ -109,8 +117,8 @@ async def no_progress(_event):
     return None
 
 
-def pipeline(tmp_path, *, subtitle=None, ocr_texts=()):
-    sources = FakeSources(subtitle)
+def pipeline(tmp_path, *, subtitle=None, source_warnings=(), ocr_texts=()):
+    sources = FakeSources(subtitle, source_warnings)
     media = FakeMedia()
     ocr = FakeOCR(ocr_texts)
     asr = FakeASR()
@@ -184,7 +192,11 @@ async def test_auto_mode_uses_burned_in_captions_before_whisper(tmp_path):
 
 @pytest.mark.asyncio
 async def test_auto_mode_falls_back_to_whisper_using_downloaded_video(tmp_path):
-    instance, _sources, media, _ocr, asr = pipeline(tmp_path, ocr_texts=("logo",) * 6)
+    instance, _sources, media, _ocr, asr = pipeline(
+        tmp_path,
+        source_warnings=("Platform captions could not be used",),
+        ocr_texts=("logo",) * 6,
+    )
 
     result = await instance.acquire(URL, TaskOptions(), gates(), no_progress)
 
@@ -193,6 +205,7 @@ async def test_auto_mode_falls_back_to_whisper_using_downloaded_video(tmp_path):
     assert media.purposes == [MediaPurpose.ANALYSIS_VIDEO]
     assert asr.calls == [("video.mp4", "auto")]
     assert "used Whisper" in result.warnings[-1]
+    assert result.warnings[0] == "Platform captions could not be used"
     assert not media.paths[0].exists()
 
 

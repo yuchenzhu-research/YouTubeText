@@ -42,6 +42,7 @@ class SourceResult:
 
     metadata: SourceMetadata
     subtitle: SubtitleTrack | None = None
+    warnings: tuple[str, ...] = ()
 
 
 class SourceError(RuntimeError):

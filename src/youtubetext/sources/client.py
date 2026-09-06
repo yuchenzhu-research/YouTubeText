@@ -68,6 +68,7 @@ class SourceClient:
         *,
         preferred_languages: Sequence[str] = (),
         include_subtitles: bool = True,
+        strict_subtitles: bool = True,
     ) -> SourceResult:
         adapter = resolve_adapter(url)
         try:
@@ -98,7 +99,15 @@ class SourceClient:
             return SourceResult(metadata=metadata)
 
         language, kind = selected
-        subtitle = self._download_subtitle(url, adapter, language, kind)
+        try:
+            subtitle = self._download_subtitle(url, adapter, language, kind)
+        except SourceFetchError as exc:
+            if strict_subtitles:
+                raise
+            return SourceResult(
+                metadata=metadata,
+                warnings=(f"Platform captions could not be used: {exc}",),
+            )
         return SourceResult(metadata=metadata, subtitle=subtitle)
 
     def _download_subtitle(

@@ -286,6 +286,18 @@ def test_advertised_track_without_downloaded_file_is_an_error():
     assert error.value.stage == "subtitle download"
 
 
+def test_caption_failure_can_be_returned_as_missing_for_auto_fallback():
+    runner = FakeRunner(youtube_info(subtitles={"en": [{"ext": "vtt"}]}))
+
+    result = SourceClient(runner).fetch(
+        "https://youtu.be/abc123",
+        strict_subtitles=False,
+    )
+
+    assert result.subtitle is None
+    assert "no VTT/SRT file" in result.warnings[0]
+
+
 def test_empty_downloaded_subtitle_is_a_parse_error():
     runner = FakeRunner(
         youtube_info(subtitles={"en": [{"ext": "vtt"}]}),
