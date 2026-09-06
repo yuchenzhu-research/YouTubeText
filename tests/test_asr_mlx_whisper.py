@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from youtubetext.asr import MLXWhisperASR
+from youtubetext.asr.mlx_whisper import _ffmpeg_trailing_silence
 from youtubetext.asr.models import GIB
 
 
@@ -161,3 +162,111 @@ def test_duration_probe_failure_is_safe_and_does_not_limit_decode(tmp_path: Path
 
     assert result.text == "still transcribed"
     assert "clip_timestamps" not in call
+
+
+def test_trailing_silence_limits_decode_and_discards_tail_segments(tmp_path: Path) -> None:
+    audio = tmp_path / "speech.m4a"
+    audio.touch()
+    call: dict[str, Any] = {}
+
+    def fake_transcribe(_path: str, **kwargs: Any) -> dict[str, Any]:
+        call.update(kwargs)
+        return {
+            "language": "zh",
+            "segments": [
+                {"start": 7.0, "end": 8.1, "text": "valid ending"},
+                {"start": 9.0, "end": 10.0, "text": "silent hallucination"},
+            ],
+        }
+
+    result = MLXWhisperASR(
+        transcribe_callable=fake_transcribe,
+        duration_probe=lambda _path: 10.0,
+        trailing_silence_probe=lambda _path, _duration: 8.0,
+    ).transcribe(audio)
+
+    assert call["clip_timestamps"] == [0.0, 8.25]
+    assert [segment.text for segment in result.segments] == ["valid ending"]
+
+
+def test_short_or_invalid_trailing_silence_does_not_shorten_media(tmp_path: Path) -> None:
+    audio = tmp_path / "speech.m4a"
+    audio.touch()
+
+    for reported_start in (9.0, -1.0, float("nan")):
+        call: dict[str, Any] = {}
+
+        def fake_transcribe(_path: str, **kwargs: Any) -> dict[str, Any]:
+            call.update(kwargs)
+            return {"text": "kept"}
+
+        MLXWhisperASR(
+            transcribe_callable=fake_transcribe,
+            duration_probe=lambda _path: 10.0,
+            trailing_silence_probe=lambda _path, _duration: reported_start,
+        ).transcribe(audio)
+
+        assert call["clip_timestamps"] == [0.0, 10.0]
+
+
+def test_trailing_silence_probe_failure_keeps_full_duration(tmp_path: Path) -> None:
+    audio = tmp_path / "speech.m4a"
+    audio.touch()
+    call: dict[str, Any] = {}
+
+    def broken_probe(_path: Path, _duration: float) -> float:
+        raise RuntimeError("ffmpeg unavailable")
+
+    def fake_transcribe(_path: str, **kwargs: Any) -> dict[str, Any]:
+        call.update(kwargs)
+        return {"text": "kept"}
+
+    MLXWhisperASR(
+        transcribe_callable=fake_transcribe,
+        duration_probe=lambda _path: 10.0,
+        trailing_silence_probe=broken_probe,
+    ).transcribe(audio)
+
+    assert call["clip_timestamps"] == [0.0, 10.0]
+
+
+def test_ffmpeg_probe_only_returns_silence_reaching_media_end(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audio = tmp_path / "speech.m4a"
+    audio.touch()
+    stderr = """
+[silencedetect] silence_start: 10.0
+[silencedetect] silence_end: 13.0 | silence_duration: 3.0
+[silencedetect] silence_start: 80.0
+[silencedetect] silence_end: 99.8 | silence_duration: 19.8
+"""
+
+    monkeypatch.setattr("youtubetext.asr.mlx_whisper.shutil.which", lambda _name: "/ffmpeg")
+    monkeypatch.setattr(
+        "youtubetext.asr.mlx_whisper.subprocess.run",
+        lambda *_args, **_kwargs: type(
+            "Completed", (), {"returncode": 0, "stderr": stderr}
+        )(),
+    )
+
+    assert _ffmpeg_trailing_silence(audio, 100.0) == 80.0
+
+
+def test_ffmpeg_probe_ignores_internal_silence(tmp_path: Path, monkeypatch) -> None:
+    audio = tmp_path / "speech.m4a"
+    audio.touch()
+    stderr = """
+[silencedetect] silence_start: 10.0
+[silencedetect] silence_end: 13.0 | silence_duration: 3.0
+"""
+
+    monkeypatch.setattr("youtubetext.asr.mlx_whisper.shutil.which", lambda _name: "/ffmpeg")
+    monkeypatch.setattr(
+        "youtubetext.asr.mlx_whisper.subprocess.run",
+        lambda *_args, **_kwargs: type(
+            "Completed", (), {"returncode": 0, "stderr": stderr}
+        )(),
+    )
+
+    assert _ffmpeg_trailing_silence(audio, 100.0) is None
