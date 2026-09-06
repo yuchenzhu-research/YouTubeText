@@ -33,14 +33,15 @@ def test_caption_selection_filters_noise_and_orders_two_lines() -> None:
     text, confidence = caption_from_observations(
         [
             observation("角标", y=0.9),
+            observation("右侧台标", x=0.86, y=0.2, confidence=1.0),
             observation("第二行", x=0.2, y=0.2, confidence=0.8),
-            observation("第一行", x=0.2, y=0.4, confidence=1.0),
+            observation("第一行", x=0.2, y=0.4, confidence=0.3),
             observation("x", height=0.01),
         ]
     )
 
     assert text == "第一行 第二行"
-    assert confidence == pytest.approx(0.9)
+    assert confidence == pytest.approx(0.55)
 
 
 def test_caption_similarity_tolerates_spacing_punctuation_and_ocr_suffix() -> None:

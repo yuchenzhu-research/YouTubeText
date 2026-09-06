@@ -40,9 +40,11 @@ def captions_are_similar(left: str, right: str, *, threshold: float = 0.88) -> b
 def caption_from_observations(
     observations: Sequence[OCRObservation],
     *,
-    minimum_confidence: float = 0.4,
+    minimum_confidence: float = 0.3,
     minimum_height: float = 0.018,
     maximum_y: float = 0.76,
+    center_left: float = 0.3,
+    center_right: float = 0.7,
 ) -> tuple[str, float]:
     """Select and order likely caption lines from a lower-video crop."""
 
@@ -53,6 +55,8 @@ def caption_from_observations(
         and observation.confidence >= minimum_confidence
         and observation.bounding_box.height >= minimum_height
         and observation.bounding_box.y <= maximum_y
+        and observation.bounding_box.x <= center_right
+        and observation.bounding_box.x + observation.bounding_box.width >= center_left
         and len(normalize_caption(observation.text)) >= 2
     ]
     candidates.sort(key=lambda item: (-item.bounding_box.y, item.bounding_box.x))
