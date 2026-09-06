@@ -10,6 +10,7 @@ class Stage(str, Enum):
     IDENTIFY = "identify"
     METADATA = "metadata"
     CAPTIONS = "captions"
+    DOWNLOAD = "download"
     OCR = "ocr"
     WHISPER = "whisper"
     MERGE = "merge"
