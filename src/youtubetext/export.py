@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -73,9 +74,12 @@ def metadata_payload(transcript: Transcript) -> dict:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    temporary = path.with_name(f".{path.name}.partial")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:

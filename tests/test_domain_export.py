@@ -8,7 +8,7 @@ from youtubetext.domain import (
     TranscriptMethod,
     TranscriptSegment,
 )
-from youtubetext.export import export_transcript, render_markdown, render_text
+from youtubetext.export import _atomic_write, export_transcript, render_markdown, render_text
 
 
 def sample_transcript() -> Transcript:
@@ -59,3 +59,13 @@ def test_export_writes_three_atomic_outputs(tmp_path):
     assert payload["extraction_method"] == "apple-vision-ocr"
     assert payload["segment_count"] == 2
     assert not list(output.directory.glob("*.partial"))
+
+
+def test_repeated_atomic_writes_leave_no_shared_partial_file(tmp_path):
+    destination = tmp_path / "transcript.txt"
+
+    _atomic_write(destination, "first")
+    _atomic_write(destination, "second")
+
+    assert destination.read_text(encoding="utf-8") == "second"
+    assert not list(tmp_path.glob("*.partial"))
