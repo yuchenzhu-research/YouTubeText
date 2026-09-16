@@ -6,16 +6,26 @@ The manual workflow downloads the base ASR model before setting
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+import youtubetext.cli as cli
+from youtubetext.acquisition import TranscriptPipeline
 from youtubetext.asr import FasterWhisperASR
+from youtubetext.backends import default_local_backends
+from youtubetext.domain import SourceMetadata
+from youtubetext.media import MediaPurpose
 from youtubetext.ocr import RapidOCRBackend
+from youtubetext.sources import SourceResult
 
 
 pytestmark = pytest.mark.skipif(
@@ -57,8 +67,9 @@ def test_rapidocr_reads_locally_rendered_text(tmp_path: Path) -> None:
     assert "HELLO" in text and "WORLD" in text, text
 
 
-def test_faster_whisper_transcribes_locally_synthesized_speech(tmp_path: Path) -> None:
-    audio_path = tmp_path / "generated-speech.wav"
+@pytest.fixture(scope="module")
+def generated_speech(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    audio_path = tmp_path_factory.mktemp("offline-speech") / "generated-speech.wav"
     script = (
         "$ErrorActionPreference = 'Stop'; "
         "Add-Type -AssemblyName System.Speech; "
@@ -80,6 +91,13 @@ def test_faster_whisper_transcribes_locally_synthesized_speech(tmp_path: Path) -
     )
     assert generated.returncode == 0, generated.stderr
     assert audio_path.is_file() and audio_path.stat().st_size > 1000
+    return audio_path
+
+
+def test_faster_whisper_transcribes_locally_synthesized_speech(
+    generated_speech: Path,
+) -> None:
+    audio_path = generated_speech
 
     cache_root = Path(os.environ["YOUTUBETEXT_REAL_MODEL_CACHE"]) / "faster"
     result = FasterWhisperASR(
@@ -90,3 +108,104 @@ def test_faster_whisper_transcribes_locally_synthesized_speech(tmp_path: Path) -
     assert result.language == "en"
     text = " ".join(segment.text.casefold() for segment in result.segments)
     assert "brown" in text and "fox" in text, text
+
+
+def test_windows_cli_exports_offline_speech_with_real_whisper(
+    generated_speech: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise CLI → pipeline → local ASR → four exports without a platform request."""
+
+    url = "https://www.youtube.com/watch?v=offline-speech"
+
+    class OfflineSource:
+        def fetch(self, requested_url: str, **_options: object) -> SourceResult:
+            return SourceResult(
+                SourceMetadata(
+                    requested_url,
+                    "youtube",
+                    "offline-speech",
+                    "Offline speech smoke",
+                    author="Windows System.Speech",
+                    webpage_url=requested_url,
+                )
+            )
+
+    class OfflineMedia:
+        async def download(
+            self,
+            _url: str,
+            directory: Path,
+            purpose: MediaPurpose,
+        ) -> Path:
+            assert purpose is MediaPurpose.AUDIO
+            directory.mkdir(parents=True, exist_ok=True)
+            copied = directory / "generated-speech.wav"
+            shutil.copyfile(generated_speech, copied)
+            return copied
+
+    cache_root = Path(os.environ["YOUTUBETEXT_REAL_MODEL_CACHE"]) / "faster"
+    backends = replace(
+        default_local_backends(),
+        asr_factory=lambda model: FasterWhisperASR(
+            model,
+            cache_root=cache_root,
+            cuda_probe=lambda: False,
+        ),
+    )
+    pipeline = TranscriptPipeline(
+        sources=OfflineSource(),
+        media=OfflineMedia(),
+        backends=backends,
+        temp_root=tmp_path / "work",
+    )
+    monkeypatch.setattr(cli, "_transcript_pipeline", lambda *_args, **_kwargs: pipeline)
+
+    output_root = tmp_path / "exports"
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            url,
+            "--mode",
+            "whisper",
+            "--language",
+            "en",
+            "--whisper-model",
+            "base",
+            "--jobs",
+            "1",
+            "--output",
+            str(output_root),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["success"] is True
+    assert len(payload["results"]) == 1
+    exported = payload["results"][0]
+    assert exported["success"] is True
+    assert exported["method"] == "faster-whisper"
+    assert exported["language"] == "en"
+
+    paths = {name: Path(path) for name, path in exported["output"].items()}
+    directory = paths.pop("directory")
+    assert directory.parent == output_root.resolve()
+    assert {path.name for path in directory.iterdir()} == {
+        "transcript.md",
+        "transcript-clean.md",
+        "transcript.txt",
+        "metadata.json",
+    }
+    assert all(path.is_file() and path.stat().st_size > 0 for path in paths.values())
+
+    metadata = json.loads(paths["metadata"].read_text(encoding="utf-8"))
+    assert metadata["extraction_method"] == "faster-whisper"
+    assert metadata["segment_count"] > 0
+    assert metadata["language"] == "en"
+    transcript_text = paths["text"].read_text(encoding="utf-8").casefold()
+    assert "brown" in transcript_text and "fox" in transcript_text
+    assert "## Transcript" in paths["markdown"].read_text(encoding="utf-8")
+    assert "**[" not in paths["clean_markdown"].read_text(encoding="utf-8")
