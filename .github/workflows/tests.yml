@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-platform:
+    name: ${{ matrix.os }} · Python 3.12
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+
+      # Exercise the Windows PowerShell 5.1 installer without downloading media
+      # or models. FFmpeg is a PATH-only prerequisite here; no video is decoded.
+      - name: Windows installer smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:YOUTUBETEXT_PYTHON = (uv python find 3.12).Trim()
+          $fixture = Join-Path $env:RUNNER_TEMP 'YouTubeText CI FFmpeg'
+          New-Item -ItemType Directory -Force -Path $fixture | Out-Null
+          Set-Content -Path (Join-Path $fixture 'ffmpeg.cmd') -Value '@echo off' -Encoding Ascii
+          $env:PATH = "$fixture;$env:PATH"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\.venv\Scripts\youtubetext.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install locked development dependencies
+        run: uv sync --locked
+
+      - name: Import core modules
+        run: uv run --no-sync python -c "import youtubetext.cli, youtubetext.acquisition, youtubetext.resume"
+
+      - name: Run unit tests
+        run: uv run --no-sync pytest
