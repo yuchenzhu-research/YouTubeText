@@ -29,6 +29,7 @@ from .ocr import (
     vision_language_codes,
 )
 from .progress import ProgressEvent, ProgressSink, Stage
+from .resume import EphemeralResumeStore, ResumeSession, ResumeStore
 from .runtime import ResourceGates
 from .sources import SourceClient, SourceResult, YtDlpAuth
 
@@ -77,12 +78,6 @@ class OCRProvider(Protocol):
     ) -> tuple[OCRFrame, ...]: ...
 
 
-class TranscriptStore(Protocol):
-    def load(self, metadata: SourceMetadata, options: TaskOptions) -> Transcript | None: ...
-
-    def save(self, transcript: Transcript, options: TaskOptions) -> bool: ...
-
-
 ASRFactory = Callable[[str], ASRBackend]
 
 
@@ -95,8 +90,8 @@ class TranscriptPipeline:
 
     Platform captions are authoritative when present. With no caption track,
     automatic mode tries Apple Vision on sampled subtitle frames and only then
-    falls back to local MLX Whisper. All temporary media is deleted when the
-    acquisition attempt finishes.
+    falls back to local MLX Whisper. Disposable runs delete temporary media;
+    resumable runs preserve incomplete media and remove it after success.
     """
 
     def __init__(
@@ -108,7 +103,7 @@ class TranscriptPipeline:
         ocr: OCRProvider | None = None,
         asr_factory: ASRFactory | None = None,
         auth: YtDlpAuth | None = None,
-        cache: TranscriptStore | None = None,
+        resume_store: ResumeStore | None = None,
         temp_root: Path | None = None,
         ocr_batch_size: int = 32,
     ) -> None:
@@ -119,8 +114,8 @@ class TranscriptPipeline:
         self._frames = frames or FrameSampler()
         self._ocr = ocr or MacVisionOCR()
         self._asr_factory = asr_factory or _default_asr_factory
-        self._cache = cache
         self._temp_root = Path(temp_root).expanduser() if temp_root else None
+        self._resume = resume_store or EphemeralResumeStore(self._temporary_root())
         self._ocr_batch_size = int(ocr_batch_size)
         self._asr_backends: dict[str, ASRBackend] = {}
 
@@ -158,6 +153,12 @@ class TranscriptPipeline:
             ProcessingMode.CAPTIONS,
         }
         if source.subtitle is not None and use_platform_caption:
+            cleanup_warning = await self._resume.discard_incomplete(
+                source.metadata,
+                options,
+            )
+            if cleanup_warning:
+                await progress(ProgressEvent(url, Stage.CACHE, cleanup_warning))
             await progress(
                 ProgressEvent(
                     url,
@@ -171,185 +172,180 @@ class TranscriptPipeline:
                 language=source.subtitle.language,
                 method=TranscriptMethod.PLATFORM_CAPTIONS,
                 segments=source.subtitle.segments,
-                warnings=source.warnings,
+                warnings=tuple(
+                    dict.fromkeys(
+                        (
+                            *source.warnings,
+                            *((cleanup_warning,) if cleanup_warning else ()),
+                        )
+                    )
+                ),
             )
         if options.mode is ProcessingMode.CAPTIONS:
             raise TranscriptAcquisitionError("no platform caption track is available")
 
-        cached = await self._load_cached_transcript(
-            url,
+        resumed = await self._resume.run(
             source.metadata,
-            source.warnings,
             options,
-            progress,
-        )
-        if cached is not None:
-            return cached
-
-        work_root = self._temporary_root()
-        work_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="task-", dir=work_root) as directory:
-            workspace = Path(directory)
-            if options.mode is ProcessingMode.WHISPER:
-                media_path = await self._download(
-                    url,
-                    workspace,
-                    MediaPurpose.AUDIO,
-                    gates,
-                    progress,
-                )
-                transcript = await self._whisper_transcript(
-                    source.metadata,
-                    media_path,
-                    options,
-                    gates,
-                    progress,
-                )
-                return await self._save_cached_transcript(transcript, options, progress)
-
-            video_path: Path | None = None
-            ocr_segments: tuple[TranscriptSegment, ...] = ()
-            ocr_warnings: tuple[str, ...] = ()
-            try:
-                video_path = await self._download(
-                    url,
-                    workspace,
-                    MediaPurpose.ANALYSIS_VIDEO,
-                    gates,
-                    progress,
-                )
-                ocr_segments, ocr_warnings = await self._read_burned_captions(
-                    url,
-                    source.metadata,
-                    video_path,
-                    workspace / "frames",
-                    options,
-                    gates,
-                    progress,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                ocr_warnings = (f"Apple Vision OCR was unavailable or failed: {exc}",)
-                if options.mode is ProcessingMode.OCR:
-                    raise TranscriptAcquisitionError(ocr_warnings[0]) from exc
-
-            usable_ocr = _ocr_is_usable(ocr_segments, source.metadata.duration_seconds)
-            if options.mode is ProcessingMode.OCR:
-                if not usable_ocr:
-                    raise TranscriptAcquisitionError(
-                        "Apple Vision OCR found no usable burned-in captions"
-                    )
-                transcript = _ocr_transcript(
-                    source.metadata,
-                    options.language,
-                    ocr_segments,
-                    warnings=(*source.warnings, *ocr_warnings),
-                )
-                return await self._save_cached_transcript(transcript, options, progress)
-
-            if options.mode is ProcessingMode.AUTO and usable_ocr:
-                transcript = _ocr_transcript(
-                    source.metadata,
-                    options.language,
-                    ocr_segments,
-                    warnings=(*source.warnings, *ocr_warnings),
-                )
-                return await self._save_cached_transcript(transcript, options, progress)
-
-            if video_path is None:
-                video_path = await self._download(
-                    url,
-                    workspace,
-                    MediaPurpose.AUDIO,
-                    gates,
-                    progress,
-                )
-            asr_result = await self._run_whisper(
+            lambda session: self._acquire_fallback(
                 url,
-                video_path,
+                source,
+                options,
+                gates,
+                progress,
+                session,
+            ),
+        )
+        if resumed.reused:
+            await progress(
+                ProgressEvent(url, Stage.CACHE, "Reusing completed local transcript", 1.0)
+            )
+        if resumed.warning:
+            await progress(ProgressEvent(url, Stage.CACHE, resumed.warning))
+        warnings = tuple(
+            dict.fromkeys(
+                (
+                    *source.warnings,
+                    *resumed.transcript.warnings,
+                    *((resumed.warning,) if resumed.warning else ()),
+                )
+            )
+        )
+        return replace(
+            resumed.transcript,
+            metadata=source.metadata,
+            warnings=warnings,
+        )
+
+    async def _acquire_fallback(
+        self,
+        url: str,
+        source: SourceResult,
+        options: TaskOptions,
+        gates: ResourceGates,
+        progress: ProgressSink,
+        session: ResumeSession,
+    ) -> Transcript:
+        if options.mode is ProcessingMode.WHISPER:
+            media_path = await session.media(
+                MediaPurpose.AUDIO,
+                lambda directory: self._download(
+                    url,
+                    directory,
+                    MediaPurpose.AUDIO,
+                    gates,
+                    progress,
+                ),
+            )
+            return await self._whisper_transcript(
+                source.metadata,
+                media_path,
                 options,
                 gates,
                 progress,
             )
 
-            if options.mode is ProcessingMode.HYBRID and usable_ocr:
-                await progress(
-                    ProgressEvent(url, Stage.MERGE, "Merging OCR and speech transcript")
-                )
-                merged = merge_ocr_and_asr(ocr_segments, asr_result.segments)
-                transcript = Transcript(
-                    metadata=source.metadata,
-                    language=_resolved_language(options.language, asr_result.language),
-                    method=TranscriptMethod.OCR_WHISPER,
-                    segments=merged,
-                    warnings=(*source.warnings, *ocr_warnings),
-                )
-                return await self._save_cached_transcript(transcript, options, progress)
-
-            warnings = (
-                *source.warnings,
-                *ocr_warnings,
-                "Apple Vision OCR found no usable burned-in captions; used Whisper.",
-            )
-            transcript = Transcript(
-                metadata=source.metadata,
-                language=asr_result.language,
-                method=TranscriptMethod.MLX_WHISPER,
-                segments=asr_result.segments,
-                warnings=warnings,
-            )
-            return await self._save_cached_transcript(transcript, options, progress)
-
-    async def _load_cached_transcript(
-        self,
-        url: str,
-        metadata: SourceMetadata,
-        source_warnings: tuple[str, ...],
-        options: TaskOptions,
-        progress: ProgressSink,
-    ) -> Transcript | None:
-        if self._cache is None:
-            return None
+        video_path: Path | None = None
+        ocr_segments: tuple[TranscriptSegment, ...] = ()
+        ocr_warnings: tuple[str, ...] = ()
         try:
-            cached = await asyncio.to_thread(self._cache.load, metadata, options)
-        except Exception:
-            return None
-        if cached is None:
-            return None
-        await progress(
-            ProgressEvent(url, Stage.CACHE, "Reusing completed local transcript", 1.0)
-        )
-        warnings = tuple(dict.fromkeys((*source_warnings, *cached.warnings)))
-        return replace(cached, metadata=metadata, warnings=warnings)
-
-    async def _save_cached_transcript(
-        self,
-        transcript: Transcript,
-        options: TaskOptions,
-        progress: ProgressSink,
-    ) -> Transcript:
-        saved = True
-        if self._cache is not None:
-            try:
-                saved = bool(
-                    await asyncio.to_thread(self._cache.save, transcript, options)
+            video_path = await session.media(
+                MediaPurpose.ANALYSIS_VIDEO,
+                lambda directory: self._download(
+                    url,
+                    directory,
+                    MediaPurpose.ANALYSIS_VIDEO,
+                    gates,
+                    progress,
+                ),
+            )
+            frame_root = self._temporary_root()
+            frame_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="frames-",
+                dir=frame_root,
+            ) as frame_directory:
+                ocr_segments, ocr_warnings = await self._read_burned_captions(
+                    url,
+                    source.metadata,
+                    video_path,
+                    Path(frame_directory),
+                    options,
+                    gates,
+                    progress,
                 )
-            except Exception:
-                saved = False
-        if not saved:
-            warning = (
-                "Local resume cache could not be saved; this transcript will not "
-                "be reusable."
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            ocr_warnings = (f"Apple Vision OCR was unavailable or failed: {exc}",)
+            if options.mode is ProcessingMode.OCR:
+                raise TranscriptAcquisitionError(ocr_warnings[0]) from exc
+
+        usable_ocr = _ocr_is_usable(ocr_segments, source.metadata.duration_seconds)
+        if options.mode is ProcessingMode.OCR:
+            if not usable_ocr:
+                raise TranscriptAcquisitionError(
+                    "Apple Vision OCR found no usable burned-in captions"
+                )
+            return _ocr_transcript(
+                source.metadata,
+                options.language,
+                ocr_segments,
+                warnings=(*source.warnings, *ocr_warnings),
             )
+
+        if options.mode is ProcessingMode.AUTO and usable_ocr:
+            return _ocr_transcript(
+                source.metadata,
+                options.language,
+                ocr_segments,
+                warnings=(*source.warnings, *ocr_warnings),
+            )
+
+        if video_path is None:
+            video_path = await session.media(
+                MediaPurpose.AUDIO,
+                lambda directory: self._download(
+                    url,
+                    directory,
+                    MediaPurpose.AUDIO,
+                    gates,
+                    progress,
+                ),
+            )
+        asr_result = await self._run_whisper(
+            url,
+            video_path,
+            options,
+            gates,
+            progress,
+        )
+
+        if options.mode is ProcessingMode.HYBRID and usable_ocr:
             await progress(
-                ProgressEvent(transcript.metadata.url, Stage.CACHE, warning)
+                ProgressEvent(url, Stage.MERGE, "Merging OCR and speech transcript")
             )
-            return replace(
-                transcript,
-                warnings=tuple(dict.fromkeys((*transcript.warnings, warning))),
+            merged = merge_ocr_and_asr(ocr_segments, asr_result.segments)
+            return Transcript(
+                metadata=source.metadata,
+                language=_resolved_language(options.language, asr_result.language),
+                method=TranscriptMethod.OCR_WHISPER,
+                segments=merged,
+                warnings=(*source.warnings, *ocr_warnings),
             )
-        return transcript
+
+        warnings = (
+            *source.warnings,
+            *ocr_warnings,
+            "Apple Vision OCR found no usable burned-in captions; used Whisper.",
+        )
+        return Transcript(
+            metadata=source.metadata,
+            language=asr_result.language,
+            method=TranscriptMethod.MLX_WHISPER,
+            segments=asr_result.segments,
+            warnings=warnings,
+        )
 
     def _temporary_root(self) -> Path:
         if self._temp_root is not None:
@@ -359,7 +355,7 @@ class TranscriptPipeline:
     async def _download(
         self,
         url: str,
-        workspace: Path,
+        media_directory: Path,
         purpose: MediaPurpose,
         gates: ResourceGates,
         progress: ProgressSink,
@@ -367,7 +363,7 @@ class TranscriptPipeline:
         label = "audio" if purpose is MediaPurpose.AUDIO else "analysis video"
         await progress(ProgressEvent(url, Stage.DOWNLOAD, f"Downloading temporary {label}"))
         async with gates.network:
-            return await self._media.download(url, workspace / "media", purpose)
+            return await self._media.download(url, media_directory, purpose)
 
     async def _read_burned_captions(
         self,

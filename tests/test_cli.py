@@ -10,7 +10,6 @@ from click.testing import CliRunner
 
 import youtubetext.cli as cli
 from youtubetext._supervisor import RUN_TEMP_ENV
-from youtubetext.cache import TranscriptCache
 from youtubetext.doctor import CachedModelStatus, DiagnosticCheck, DoctorReport
 from youtubetext.domain import (
     OutputFiles,
@@ -23,6 +22,7 @@ from youtubetext.domain import (
     TranscriptSegment,
 )
 from youtubetext.progress import ProgressEvent, Stage
+from youtubetext.resume import LocalResumeStore
 from youtubetext.runtime import HostProfile
 
 URL_1 = "https://youtu.be/first"
@@ -292,7 +292,7 @@ def test_cookie_file_path_and_contents_are_not_exposed(monkeypatch, tmp_path):
     assert "unique-secret-cookie-value" not in result.output
 
 
-def test_resume_adds_a_private_transcript_cache_to_the_pipeline(monkeypatch, tmp_path):
+def test_resume_adds_a_private_resume_store_to_the_pipeline(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
     def pipeline_factory(**options):
@@ -305,7 +305,7 @@ def test_resume_adds_a_private_transcript_cache_to_the_pipeline(monkeypatch, tmp
     result = CliRunner().invoke(cli.main, [URL_1, "--resume", "--json"])
 
     assert result.exit_code == 0, result.output
-    assert isinstance(captured["cache"], TranscriptCache)
+    assert isinstance(captured["resume_store"], LocalResumeStore)
     assert "transcripts" not in result.output
 
 

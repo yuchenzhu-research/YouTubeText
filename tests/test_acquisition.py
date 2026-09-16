@@ -13,7 +13,6 @@ from youtubetext.acquisition import (
     merge_ocr_and_asr,
 )
 from youtubetext.asr import ASRResult
-from youtubetext.cache import TranscriptCache
 from youtubetext.domain import (
     ProcessingMode,
     SourceMetadata,
@@ -24,6 +23,7 @@ from youtubetext.domain import (
 from youtubetext.media import MediaPurpose, SampledFrame
 from youtubetext.ocr import BoundingBox, OCRFrame, OCRObservation
 from youtubetext.progress import Stage
+from youtubetext.resume import LocalResumeStore
 from youtubetext.runtime import CapacityPlan, HostProfile, ResourceGates
 from youtubetext.sources import SourceResult, SubtitleKind, SubtitleTrack
 
@@ -129,7 +129,7 @@ def pipeline(
     subtitle=None,
     source_warnings=(),
     ocr_texts=(),
-    cache=None,
+    resume_store=None,
 ):
     sources = FakeSources(subtitle, source_warnings)
     media = FakeMedia()
@@ -141,7 +141,7 @@ def pipeline(
         frames=FakeFrames(),
         ocr=ocr,
         asr_factory=lambda _model: asr,
-        cache=cache,
+        resume_store=resume_store,
         temp_root=tmp_path,
         ocr_batch_size=2,
     )
@@ -150,7 +150,7 @@ def pipeline(
 
 @pytest.mark.asyncio
 async def test_resume_rechecks_platform_then_skips_completed_local_work(tmp_path):
-    cache = TranscriptCache(tmp_path / "cache")
+    resume_store = LocalResumeStore(tmp_path / "resume", lock_poll_seconds=0.001)
     options = TaskOptions(language="zh-Hant")
     texts = (
         "国际局势正在发生一系列深刻变化",
@@ -160,10 +160,20 @@ async def test_resume_rechecks_platform_then_skips_completed_local_work(tmp_path
         "投资者需要区分短期波动长期趋势",
         "下面我们继续观察事件如何演化",
     )
-    first, *_ = pipeline(tmp_path / "first", ocr_texts=texts, cache=cache)
+    first, *_ = pipeline(
+        tmp_path / "first",
+        ocr_texts=texts,
+        resume_store=resume_store,
+    )
     expected = await first.acquire(URL, options, gates(), no_progress)
 
-    second, sources, media, _ocr, asr = pipeline(tmp_path / "second", cache=cache)
+    second, sources, media, _ocr, asr = pipeline(
+        tmp_path / "second",
+        resume_store=LocalResumeStore(
+            tmp_path / "resume",
+            lock_poll_seconds=0.001,
+        ),
+    )
     events = []
 
     async def collect(event):
@@ -180,7 +190,7 @@ async def test_resume_rechecks_platform_then_skips_completed_local_work(tmp_path
 
 @pytest.mark.asyncio
 async def test_new_platform_caption_wins_over_cached_fallback(tmp_path):
-    cache = TranscriptCache(tmp_path / "cache")
+    resume_store = LocalResumeStore(tmp_path / "resume", lock_poll_seconds=0.001)
     options = TaskOptions(mode=ProcessingMode.AUTO)
     texts = (
         "国际局势正在发生一系列深刻变化",
@@ -190,7 +200,11 @@ async def test_new_platform_caption_wins_over_cached_fallback(tmp_path):
         "投资者需要区分短期波动长期趋势",
         "下面我们继续观察事件如何演化",
     )
-    first, *_ = pipeline(tmp_path / "first", ocr_texts=texts, cache=cache)
+    first, *_ = pipeline(
+        tmp_path / "first",
+        ocr_texts=texts,
+        resume_store=resume_store,
+    )
     await first.acquire(URL, options, gates(), no_progress)
     track = SubtitleTrack(
         "en",
@@ -200,7 +214,7 @@ async def test_new_platform_caption_wins_over_cached_fallback(tmp_path):
     second, _sources, media, _ocr, asr = pipeline(
         tmp_path / "second",
         subtitle=track,
-        cache=cache,
+        resume_store=resume_store,
     )
 
     result = await second.acquire(URL, options, gates(), no_progress)
@@ -212,14 +226,49 @@ async def test_new_platform_caption_wins_over_cached_fallback(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_new_platform_caption_removes_abandoned_resume_media(tmp_path):
+    resume_root = tmp_path / "resume"
+    resume_store = LocalResumeStore(resume_root, lock_poll_seconds=0.001)
+    options = TaskOptions(mode=ProcessingMode.AUTO)
+
+    async def produce(directory):
+        path = directory / "analysis-video.mp4"
+        path.write_bytes(b"private temporary media")
+        return path
+
+    async def interrupted(session):
+        await session.media(MediaPurpose.ANALYSIS_VIDEO, produce)
+        raise RuntimeError("simulated OCR interruption")
+
+    with pytest.raises(RuntimeError, match="OCR interruption"):
+        await resume_store.run(META, options, interrupted)
+
+    task_root = resume_root / "tasks"
+    assert any(task_root.iterdir())
+
+    track = SubtitleTrack(
+        "zh-Hant",
+        SubtitleKind.MANUAL,
+        (TranscriptSegment(0, 2, "平台后来提供的字幕"),),
+    )
+    instance, _sources, media, _ocr, asr = pipeline(
+        tmp_path / "run",
+        subtitle=track,
+        resume_store=resume_store,
+    )
+
+    result = await instance.acquire(URL, options, gates(), no_progress)
+
+    assert result.method is TranscriptMethod.PLATFORM_CAPTIONS
+    assert list(task_root.iterdir()) == []
+    assert media.purposes == []
+    assert asr.calls == []
+
+
+@pytest.mark.asyncio
 async def test_cache_failures_never_break_normal_transcript_acquisition(tmp_path):
-    class BrokenCache:
-        def load(self, _metadata, _options):
-            raise OSError("cache unavailable")
-
-        def save(self, _transcript, _options):
-            raise OSError("cache unavailable")
-
+    blocked_root = tmp_path / "blocked-resume-root"
+    blocked_root.write_text("not a directory", encoding="utf-8")
     texts = (
         "国际局势正在发生一系列深刻变化",
         "美联储政策仍然牵动全球资本市场",
@@ -231,13 +280,13 @@ async def test_cache_failures_never_break_normal_transcript_acquisition(tmp_path
     instance, *_ = pipeline(
         tmp_path,
         ocr_texts=texts,
-        cache=BrokenCache(),
+        resume_store=LocalResumeStore(blocked_root),
     )
 
     result = await instance.acquire(URL, TaskOptions(), gates(), no_progress)
 
     assert result.method is TranscriptMethod.APPLE_VISION_OCR
-    assert "could not be saved" in result.warnings[-1]
+    assert "temporary files only" in result.warnings[-1]
 
 
 @pytest.mark.asyncio

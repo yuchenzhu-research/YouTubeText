@@ -15,11 +15,11 @@ from rich.console import Console
 from . import __version__
 from ._supervisor import RUN_TEMP_ENV, SUPERVISED_ENV, run_supervised
 from .acquisition import TranscriptPipeline
-from .cache import TranscriptCache
 from .doctor import DoctorReport, diagnose
 from .domain import ProcessingMode, TaskOptions, TaskResult
 from .engine import YouTubeTextEngine
 from .progress import ProgressEvent, discard_progress
+from .resume import LocalResumeStore
 from .runtime import CapacityPlan, detect_host
 from .sources import COOKIE_BROWSERS, YtDlpAuth
 
@@ -238,13 +238,17 @@ def _transcript_pipeline(
 ) -> TranscriptPipeline:
     run_root = os.environ.get(RUN_TEMP_ENV, "").strip()
     options: dict[str, object] = {}
+    temporary_root = Path(run_root) if run_root else None
     if run_root:
-        options["temp_root"] = Path(run_root)
+        options["temp_root"] = temporary_root
     if auth is not None:
         options["auth"] = auth
     if resume:
         scope = auth.cache_scope() if auth is not None else "anonymous"
-        options["cache"] = TranscriptCache(auth_scope=scope)
+        options["resume_store"] = LocalResumeStore(
+            auth_scope=scope,
+            temp_root=temporary_root,
+        )
     return TranscriptPipeline(**options)
 
 

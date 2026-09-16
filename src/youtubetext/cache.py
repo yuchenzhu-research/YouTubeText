@@ -92,6 +92,11 @@ class TranscriptCache:
                 pass
             return False
 
+    def key(self, metadata: SourceMetadata, options: TaskOptions) -> str:
+        """Return the opaque task key shared by transcript and stage storage."""
+
+        return self._path(metadata, options).stem
+
     def _path(self, metadata: SourceMetadata, options: TaskOptions) -> Path:
         signature = {
             "schema": CACHE_SCHEMA,
