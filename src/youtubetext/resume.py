@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
 import math
@@ -19,6 +18,7 @@ from typing import Protocol
 
 from platformdirs import user_cache_dir
 
+from ._locking import FileLock, open_file_lock
 from .cache import TranscriptCache
 from .domain import SourceMetadata, TaskOptions, Transcript
 from .media import FRAME_SAMPLING_REVISION, MediaPurpose, SampledFrame
@@ -225,6 +225,10 @@ class LocalResumeStore:
     def clear_incomplete(self) -> CacheCleanup:
         """Delete abandoned task state while skipping every active task lock."""
 
+        if os.name == "nt":
+            task_count, _task_bytes = _task_tree_usage(self._tasks)
+            return CacheCleanup(root=self.root, failed_tasks=task_count)
+
         root_descriptor: int | None = None
         tasks_descriptor: int | None = None
         locks_descriptor: int | None = None
@@ -267,19 +271,15 @@ class LocalResumeStore:
             active_tasks = 0
             failed_tasks = 0
             for task_key in task_keys:
-                descriptor: int | None = None
-                lock_acquired = False
+                lock: FileLock | None = None
                 try:
-                    descriptor = _open_lock_file(
+                    lock = open_file_lock(
                         f"{task_key}.lock",
                         dir_fd=locks_descriptor,
                     )
-                    try:
-                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
+                    if not lock.try_acquire():
                         active_tasks += 1
                         continue
-                    lock_acquired = True
 
                     if not _is_directory(task_key, dir_fd=tasks_descriptor):
                         continue
@@ -295,11 +295,8 @@ class LocalResumeStore:
                 except OSError:
                     failed_tasks += 1
                 finally:
-                    if descriptor is not None:
-                        if lock_acquired:
-                            _release_lock(descriptor)
-                        else:
-                            os.close(descriptor)
+                    if lock is not None:
+                        lock.close()
 
             return CacheCleanup(
                 root=self.root,
@@ -324,15 +321,15 @@ class LocalResumeStore:
         work: Callable[[ResumeSession], Awaitable[Transcript]],
     ) -> ResumeResult:
         key = self._transcripts.key(metadata, options)
-        lock_descriptor: int | None = None
+        lock: FileLock | None = None
         try:
-            lock_descriptor = await self._acquire_lock(key)
+            lock = await self._acquire_lock(key)
             _ensure_private_directory(self._tasks)
             task_root = self._tasks / key
             _ensure_private_directory(task_root)
         except OSError:
-            if lock_descriptor is not None:
-                _release_lock(lock_descriptor)
+            if lock is not None:
+                lock.close()
             result = await EphemeralResumeStore(self._temp_root).run(
                 metadata,
                 options,
@@ -378,7 +375,7 @@ class LocalResumeStore:
             )
             return ResumeResult(transcript, warning=warning)
         finally:
-            _release_lock(lock_descriptor)
+            lock.close()
 
     async def discard_incomplete(
         self,
@@ -389,7 +386,7 @@ class LocalResumeStore:
 
         key = self._transcripts.key(metadata, options)
         try:
-            lock_descriptor = await self._acquire_lock(key)
+            lock = await self._acquire_lock(key)
         except OSError:
             return "Local resume temporary files could not be checked or removed."
 
@@ -402,22 +399,20 @@ class LocalResumeStore:
                 else ""
             )
         finally:
-            _release_lock(lock_descriptor)
+            lock.close()
 
-    async def _acquire_lock(self, key: str) -> int:
+    async def _acquire_lock(self, key: str) -> FileLock:
         _ensure_private_directory(self.root)
         _ensure_private_directory(self._locks)
         path = self._locks / f"{key}.lock"
-        descriptor = _open_lock_file(path)
+        lock = open_file_lock(path)
         try:
             while True:
-                try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return descriptor
-                except BlockingIOError:
-                    await asyncio.sleep(self._lock_poll_seconds)
+                if lock.try_acquire():
+                    return lock
+                await asyncio.sleep(self._lock_poll_seconds)
         except BaseException:
-            os.close(descriptor)
+            lock.close()
             raise
 
 
@@ -922,27 +917,6 @@ def _remove_tree_at(parent_descriptor: int, name: str) -> bool:
         return False
 
 
-def _open_lock_file(
-    path: str | Path,
-    *,
-    dir_fd: int | None = None,
-) -> int:
-    flags = os.O_RDWR | os.O_CREAT
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(path, flags, 0o600, dir_fd=dir_fd)
-        os.fchmod(descriptor, 0o600)
-        return descriptor
-    except BaseException:
-        if descriptor is not None:
-            os.close(descriptor)
-        raise
-
-
 def _atomic_json(path: Path, payload: object) -> bool:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
     descriptor: int | None = None
@@ -991,10 +965,3 @@ def _remove_tree(path: Path) -> bool:
         return True
     except OSError:
         return False
-
-
-def _release_lock(descriptor: int) -> None:
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)

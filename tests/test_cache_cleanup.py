@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import fcntl
 from pathlib import Path
 
 import youtubetext.resume as resume_module
+from youtubetext._locking import open_file_lock
 from youtubetext.resume import CacheCleanup, LocalResumeStore
 
 
@@ -121,12 +121,12 @@ def test_clear_incomplete_counts_locked_task_as_active(tmp_path: Path) -> None:
     locks.mkdir()
     lock_path = locks / f"{task_key}.lock"
 
-    with lock_path.open("a+b") as held_lock:
-        fcntl.flock(held_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            cleanup = LocalResumeStore(root).clear_incomplete()
-        finally:
-            fcntl.flock(held_lock.fileno(), fcntl.LOCK_UN)
+    held_lock = open_file_lock(lock_path)
+    assert held_lock.try_acquire()
+    try:
+        cleanup = LocalResumeStore(root).clear_incomplete()
+    finally:
+        held_lock.close()
 
     assert cleanup == CacheCleanup(root=root, active_tasks=1)
     assert (task / "state.bin").read_bytes() == payload
