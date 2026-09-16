@@ -3,14 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
 from platformdirs import user_cache_dir
 
-from .asr import ASRBackend, ASRResult, MLXWhisperASR
+from .asr import ASRBackend, ASRResult
+from .backends import (
+    ASRFactory,
+    LocalBackends,
+    OCRLanguageResolver,
+    OCRProvider,
+    default_local_backends,
+)
 from .domain import (
     ProcessingMode,
     SourceMetadata,
@@ -21,7 +28,6 @@ from .domain import (
 )
 from .media import FrameSampler, MediaDownloader, MediaPurpose, SampledFrame
 from .ocr import (
-    MacVisionOCR,
     OCRFrame,
     normalize_caption,
     subtitle_segments_from_frames,
@@ -74,33 +80,12 @@ class FrameProvider(Protocol):
     ) -> tuple[SampledFrame, ...]: ...
 
 
-class OCRProvider(Protocol):
-    @property
-    def checkpoint_revision(self) -> str: ...
-
-    async def recognize_images_async(
-        self,
-        image_paths: Sequence[str | Path],
-        *,
-        languages: Sequence[str] = (),
-        accurate: bool = True,
-        minimum_text_height: float = 0.012,
-    ) -> tuple[OCRFrame, ...]: ...
-
-
-ASRFactory = Callable[[str], ASRBackend]
-
-
-def _default_asr_factory(model: str) -> ASRBackend:
-    return MLXWhisperASR(model)
-
-
 class TranscriptPipeline:
     """Turn one supported URL into a normalized transcript.
 
     Platform captions are authoritative when present. With no caption track,
-    automatic mode tries Apple Vision on sampled subtitle frames and only then
-    falls back to local MLX Whisper. Disposable runs delete temporary media;
+    automatic mode tries local OCR on sampled subtitle frames and only then
+    falls back to local Whisper. Disposable runs delete temporary media;
     resumable runs preserve incomplete media and remove it after success.
     """
 
@@ -112,6 +97,7 @@ class TranscriptPipeline:
         frames: FrameProvider | None = None,
         ocr: OCRProvider | None = None,
         asr_factory: ASRFactory | None = None,
+        backends: LocalBackends | None = None,
         auth: YtDlpAuth | None = None,
         resume_store: ResumeStore | None = None,
         temp_root: Path | None = None,
@@ -119,11 +105,28 @@ class TranscriptPipeline:
     ) -> None:
         if ocr_batch_size < 1:
             raise ValueError("ocr_batch_size must be at least one")
+        selected_backends = backends
+        if selected_backends is None and (ocr is None or asr_factory is None):
+            selected_backends = default_local_backends()
         self._sources = sources or SourceClient(auth=auth)
         self._media = media or MediaDownloader(auth=auth)
         self._frames = frames or FrameSampler()
-        self._ocr = ocr or MacVisionOCR()
-        self._asr_factory = asr_factory or _default_asr_factory
+        self._ocr = ocr or _required_backends(selected_backends).ocr
+        self._asr_factory = (
+            asr_factory or _required_backends(selected_backends).asr_factory
+        )
+        if selected_backends is None:
+            self._ocr_label = "Apple Vision OCR"
+            self._asr_label = "Whisper"
+            self._ocr_method = TranscriptMethod.APPLE_VISION_OCR
+            self._asr_method = TranscriptMethod.MLX_WHISPER
+            self._ocr_language_codes = vision_language_codes
+        else:
+            self._ocr_label = selected_backends.ocr_label
+            self._asr_label = selected_backends.asr_label
+            self._ocr_method = selected_backends.ocr_method
+            self._asr_method = selected_backends.asr_method
+            self._ocr_language_codes = selected_backends.ocr_language_codes
         self._temp_root = Path(temp_root).expanduser() if temp_root else None
         self._resume = resume_store or EphemeralResumeStore(self._temporary_root())
         self._ocr_batch_size = int(ocr_batch_size)
@@ -304,7 +307,9 @@ class TranscriptPipeline:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            ocr_warnings = (f"Apple Vision OCR was unavailable or failed: {exc}",)
+            ocr_warnings = (
+                f"{self._ocr_label} was unavailable or failed: {exc}",
+            )
             if options.mode is ProcessingMode.OCR:
                 raise TranscriptAcquisitionError(ocr_warnings[0]) from exc
 
@@ -312,12 +317,13 @@ class TranscriptPipeline:
         if options.mode is ProcessingMode.OCR:
             if not usable_ocr:
                 raise TranscriptAcquisitionError(
-                    "Apple Vision OCR found no usable burned-in captions"
+                    f"{self._ocr_label} found no usable burned-in captions"
                 )
             return _ocr_transcript(
                 source.metadata,
                 options.language,
                 ocr_segments,
+                method=self._ocr_method,
                 warnings=(*source.warnings, *ocr_warnings),
             )
 
@@ -326,6 +332,7 @@ class TranscriptPipeline:
                 source.metadata,
                 options.language,
                 ocr_segments,
+                method=self._ocr_method,
                 warnings=(*source.warnings, *ocr_warnings),
             )
 
@@ -364,12 +371,13 @@ class TranscriptPipeline:
         warnings = (
             *source.warnings,
             *ocr_warnings,
-            "Apple Vision OCR found no usable burned-in captions; used Whisper.",
+            f"{self._ocr_label} found no usable burned-in captions; "
+            f"used {self._asr_label}.",
         )
         return Transcript(
             metadata=source.metadata,
             language=asr_result.language,
-            method=TranscriptMethod.MLX_WHISPER,
+            method=self._asr_method,
             segments=asr_result.segments,
             warnings=warnings,
         )
@@ -412,7 +420,11 @@ class TranscriptPipeline:
             )
             if not sampled:
                 return (), ()
-            languages = _ocr_languages(options.language, metadata)
+            languages = _ocr_languages(
+                options.language,
+                metadata,
+                self._ocr_language_codes,
+            )
             engine_revision = await run_blocking(
                 _ocr_checkpoint_revision,
                 self._ocr,
@@ -450,10 +462,14 @@ class TranscriptPipeline:
         failure_ratio = failed_frames / len(sampled)
         if failure_ratio > 0.1:
             raise TranscriptAcquisitionError(
-                f"Apple Vision OCR failed on {failed_frames} of {len(sampled)} frames"
+                f"{self._ocr_label} failed on {failed_frames} of "
+                f"{len(sampled)} frames"
             )
         warnings = (
-            (f"Apple Vision OCR could not read {failed_frames} sampled frames.",)
+            (
+                f"{self._ocr_label} could not read {failed_frames} "
+                "sampled frames.",
+            )
             if failed_frames
             else ()
         )
@@ -482,7 +498,7 @@ class TranscriptPipeline:
         return Transcript(
             metadata=metadata,
             language=result.language,
-            method=TranscriptMethod.MLX_WHISPER,
+            method=self._asr_method,
             segments=result.segments,
         )
 
@@ -499,7 +515,13 @@ class TranscriptPipeline:
         if backend is None:
             backend = self._asr_factory(model)
             self._asr_backends[model] = backend
-        await progress(ProgressEvent(url, Stage.WHISPER, f"Transcribing with Whisper ({model})"))
+        await progress(
+            ProgressEvent(
+                url,
+                Stage.WHISPER,
+                f"Transcribing with {self._asr_label} ({model})",
+            )
+        )
         async with gates.asr:
             result = await run_blocking(
                 backend.transcribe,
@@ -535,8 +557,12 @@ def _ocr_checkpoint_revision(provider: object) -> str:
     return f"python-provider:{provider_type.__module__}.{provider_type.__qualname__}"
 
 
-def _ocr_languages(language: str, metadata: SourceMetadata) -> tuple[str, ...]:
-    explicit = vision_language_codes(language)
+def _ocr_languages(
+    language: str,
+    metadata: SourceMetadata,
+    language_codes: OCRLanguageResolver = vision_language_codes,
+) -> tuple[str, ...]:
+    explicit = language_codes(language)
     if explicit:
         return explicit
     context = f"{metadata.title} {metadata.author}"
@@ -628,13 +654,14 @@ def _ocr_transcript(
     requested_language: str,
     segments: tuple[TranscriptSegment, ...],
     *,
+    method: TranscriptMethod = TranscriptMethod.APPLE_VISION_OCR,
     warnings: tuple[str, ...] = (),
 ) -> Transcript:
     language = _detected_ocr_language(requested_language, metadata, segments)
     return Transcript(
         metadata=metadata,
         language=language,
-        method=TranscriptMethod.APPLE_VISION_OCR,
+        method=method,
         segments=segments,
         warnings=warnings,
     )
@@ -696,6 +723,12 @@ def _detected_ocr_language(
     if simplified_score > traditional_score:
         return "zh-Hans"
     return "zh"
+
+
+def _required_backends(backends: LocalBackends | None) -> LocalBackends:
+    if backends is None:
+        raise RuntimeError("local model backends were not configured")
+    return backends
 
 
 def merge_ocr_and_asr(

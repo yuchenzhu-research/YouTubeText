@@ -13,6 +13,7 @@ from youtubetext.acquisition import (
     merge_ocr_and_asr,
 )
 from youtubetext.asr import ASRResult
+from youtubetext.backends import LocalBackends
 from youtubetext.domain import (
     ProcessingMode,
     SourceMetadata,
@@ -164,6 +165,7 @@ def pipeline(
     ocr_texts=(),
     ocr_provider=None,
     resume_store=None,
+    backends=None,
 ):
     sources = FakeSources(subtitle, source_warnings)
     media = FakeMedia()
@@ -175,11 +177,23 @@ def pipeline(
         frames=FakeFrames(),
         ocr=ocr,
         asr_factory=lambda _model: asr,
+        backends=backends,
         resume_store=resume_store,
         temp_root=tmp_path,
         ocr_batch_size=2,
     )
     return instance, sources, media, ocr, asr
+
+
+def windows_backend_labels() -> LocalBackends:
+    return LocalBackends(
+        ocr=FakeOCR(),
+        asr_factory=lambda _model: FakeASR(),
+        ocr_label="RapidOCR",
+        asr_label="faster-whisper",
+        ocr_method=TranscriptMethod.RAPID_OCR,
+        asr_method=TranscriptMethod.FASTER_WHISPER,
+    )
 
 
 @pytest.mark.asyncio
@@ -444,6 +458,43 @@ async def test_forced_whisper_downloads_audio_and_normalizes_language(tmp_path):
     assert media.purposes == [MediaPurpose.AUDIO]
     assert asr.calls == [("audio.m4a", "zh")]
     assert sources.include_subtitles is False
+
+
+@pytest.mark.asyncio
+async def test_windows_backends_record_the_actual_ocr_and_asr_methods(tmp_path):
+    texts = (
+        "国际局势正在发生一系列深刻变化",
+        "美联储政策仍然牵动全球资本市场",
+        "欧洲各国面对新的安全经济压力",
+        "北京近期释放出若干重要政策信号",
+        "投资者需要区分短期波动长期趋势",
+        "下面我们继续观察事件如何演化",
+    )
+    ocr_pipeline, *_ = pipeline(
+        tmp_path / "ocr",
+        ocr_texts=texts,
+        backends=windows_backend_labels(),
+    )
+    asr_pipeline, *_ = pipeline(
+        tmp_path / "asr",
+        backends=windows_backend_labels(),
+    )
+
+    ocr_result = await ocr_pipeline.acquire(
+        URL,
+        TaskOptions(mode=ProcessingMode.OCR),
+        gates(),
+        no_progress,
+    )
+    asr_result = await asr_pipeline.acquire(
+        URL,
+        TaskOptions(mode=ProcessingMode.WHISPER),
+        gates(),
+        no_progress,
+    )
+
+    assert ocr_result.method is TranscriptMethod.RAPID_OCR
+    assert asr_result.method is TranscriptMethod.FASTER_WHISPER
 
 
 @pytest.mark.asyncio

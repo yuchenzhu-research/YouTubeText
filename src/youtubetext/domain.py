@@ -18,7 +18,9 @@ class ProcessingMode(str, Enum):
 class TranscriptMethod(str, Enum):
     PLATFORM_CAPTIONS = "platform-captions"
     APPLE_VISION_OCR = "apple-vision-ocr"
+    RAPID_OCR = "rapidocr"
     MLX_WHISPER = "mlx-whisper"
+    FASTER_WHISPER = "faster-whisper"
     OCR_WHISPER = "ocr-whisper"
 
 
