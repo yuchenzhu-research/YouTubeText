@@ -19,7 +19,7 @@ from .doctor import DoctorReport, diagnose
 from .domain import ProcessingMode, TaskOptions, TaskResult
 from .engine import YouTubeTextEngine
 from .progress import ProgressEvent, discard_progress
-from .resume import LocalResumeStore
+from .resume import CacheUsage, LocalResumeStore
 from .runtime import CapacityPlan, detect_host
 from .sources import COOKIE_BROWSERS, YtDlpAuth
 
@@ -48,7 +48,8 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     context_settings={"help_option_names": ["-h", "--help"]},
     help=(
         "Export timestamped and clean transcripts from YouTube or Bilibili URLs.\n\n"
-        "Run 'youtubetext doctor' to inspect local requirements without a URL."
+        "Run 'youtubetext doctor' to inspect local requirements, or "
+        "'youtubetext cache' to inspect local resume storage."
     ),
 )
 @click.argument("urls", nargs=-1, metavar="URL [URL...]")
@@ -144,6 +145,7 @@ def main(
     """Run YouTubeText or its offline environment doctor."""
 
     doctor_command = len(urls) == 1 and urls[0].casefold() == "doctor"
+    cache_command = bool(urls) and urls[0].casefold() == "cache"
     if doctor_mode or doctor_command:
         if doctor_mode and urls:
             raise click.UsageError("--doctor does not accept URL arguments")
@@ -151,8 +153,14 @@ def main(
         return
     if urls and urls[0].casefold() == "doctor":
         raise click.UsageError("the doctor command does not accept URL arguments")
+    if cache_command:
+        _run_cache(urls[1:], json_output=json_output)
+        return
     if not urls:
-        raise click.UsageError("provide at least one URL, or run 'youtubetext doctor'")
+        raise click.UsageError(
+            "provide at least one URL, or run 'youtubetext doctor' / "
+            "'youtubetext cache'"
+        )
     if cookies_from_browser and cookies_file is not None:
         raise click.UsageError(
             "choose either --cookies-from-browser or --cookies-file, not both"
@@ -228,7 +236,8 @@ def requires_supervised_worker(arguments: tuple[str, ...]) -> bool:
         context.close()
 
     doctor_command = len(urls) == 1 and urls[0].casefold() == "doctor"
-    return bool(urls) and not doctor_mode and not doctor_command
+    cache_command = bool(urls) and urls[0].casefold() == "cache"
+    return bool(urls) and not doctor_mode and not doctor_command and not cache_command
 
 
 def _transcript_pipeline(
@@ -265,6 +274,17 @@ def _run_doctor(*, json_output: bool) -> None:
         _render_doctor(report, Console(highlight=False))
     if not report.ready:
         raise click.exceptions.Exit(report.exit_code)
+
+
+def _run_cache(arguments: tuple[str, ...], *, json_output: bool) -> None:
+    normalized = tuple(argument.casefold() for argument in arguments)
+    if normalized not in {(), ("status",)}:
+        raise click.UsageError("use 'youtubetext cache' or 'youtubetext cache status'")
+    usage = LocalResumeStore().usage()
+    if json_output:
+        click.echo(json.dumps(usage.as_dict(), ensure_ascii=False))
+        return
+    _render_cache_usage(usage, Console(highlight=False))
 
 
 def _progress_sink(console: Console):
@@ -306,6 +326,29 @@ def _render_doctor(report: DoctorReport, console: Console) -> None:
     status = "ready" if report.ready else "not ready"
     style = "green" if report.ready else "red"
     console.print(f"[{style}]{status}[/{style}]")
+
+
+def _render_cache_usage(usage: CacheUsage, console: Console) -> None:
+    console.print("[bold]YouTubeText cache[/bold]")
+    console.print(f"Location: {usage.root}")
+    console.print(
+        "Completed transcripts: "
+        f"{usage.transcript_count} ({_format_bytes(usage.transcript_bytes)})"
+    )
+    console.print(
+        f"Incomplete tasks: {usage.task_count} ({_format_bytes(usage.task_bytes)})"
+    )
+    console.print(f"Total: {_format_bytes(usage.total_bytes)}")
+
+
+def _format_bytes(value: int) -> str:
+    amount = float(max(0, value))
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    for index, unit in enumerate(units):
+        if amount < 1024 or index == len(units) - 1:
+            return f"{int(amount)} B" if index == 0 else f"{amount:.1f} {unit}"
+        amount /= 1024
+    raise AssertionError("unreachable")
 
 
 def _result_payload(result: TaskResult) -> dict[str, Any]:

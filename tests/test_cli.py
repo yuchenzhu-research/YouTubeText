@@ -22,7 +22,7 @@ from youtubetext.domain import (
     TranscriptSegment,
 )
 from youtubetext.progress import ProgressEvent, Stage
-from youtubetext.resume import LocalResumeStore
+from youtubetext.resume import CacheUsage, LocalResumeStore
 from youtubetext.runtime import HostProfile
 
 URL_1 = "https://youtu.be/first"
@@ -91,6 +91,7 @@ def test_help_and_version_do_not_require_a_url():
     assert "--cookies-from-browser" in help_result.output
     assert "--cookies-file" in help_result.output
     assert "--resume" in help_result.output
+    assert "youtubetext cache" in help_result.output
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
     assert "0.1.0" in version_result.output
@@ -106,6 +107,8 @@ def test_help_and_version_do_not_require_a_url():
         (("-h",), False),
         (("--version",), False),
         (("doctor",), False),
+        (("cache",), False),
+        (("cache", "status", "--json"), False),
         (("--json", "doctor"), False),
         (("--doctor", "--json"), False),
     ],
@@ -425,6 +428,62 @@ def test_doctor_json_and_failed_requirement_exit_nonzero(monkeypatch):
 
     assert result.exit_code == 1
     assert json.loads(result.output)["ready"] is False
+
+
+def test_cache_command_reports_storage_without_loading_runtime(monkeypatch):
+    usage = CacheUsage(
+        root=Path("/cache-test"),
+        transcript_count=3,
+        transcript_bytes=1536,
+        task_count=2,
+        task_bytes=2 * 1024**2,
+    )
+
+    class FakeStore:
+        def usage(self):
+            return usage
+
+    monkeypatch.setattr(cli, "LocalResumeStore", FakeStore)
+    monkeypatch.setattr(
+        cli,
+        "detect_host",
+        lambda: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+
+    result = CliRunner().invoke(cli.main, ["cache"])
+
+    assert result.exit_code == 0, result.output
+    assert str(usage.root) in result.output
+    assert "Completed transcripts: 3 (1.5 KiB)" in result.output
+    assert "Incomplete tasks: 2 (2.0 MiB)" in result.output
+
+
+def test_cache_status_supports_machine_readable_json(monkeypatch, tmp_path):
+    usage = CacheUsage(
+        root=tmp_path / "cache",
+        transcript_count=1,
+        transcript_bytes=10,
+        task_count=1,
+        task_bytes=20,
+    )
+
+    class FakeStore:
+        def usage(self):
+            return usage
+
+    monkeypatch.setattr(cli, "LocalResumeStore", FakeStore)
+
+    result = CliRunner().invoke(cli.main, ["cache", "status", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == usage.as_dict()
+
+
+def test_cache_command_rejects_unknown_actions():
+    result = CliRunner().invoke(cli.main, ["cache", "delete"])
+
+    assert result.exit_code == 2
+    assert "cache status" in result.output
 
 
 def test_invalid_jobs_is_rejected_before_runtime(monkeypatch):

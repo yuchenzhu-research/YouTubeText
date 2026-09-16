@@ -122,11 +122,20 @@ cd YouTubeText
 完整字幕保存在 `~/Library/Caches/YouTubeText/transcripts/`，未完成任务保存在同级的
 `tasks/`，不会自动过期；目录和文件分别限制为当前用户可读的 `0700`/`0600` 权限。
 同一个任务同时启动多次时，只会有一个进程执行识别，其余进程等待后复用结果。匿名任务
-与不同内容的 Cookie 文件使用相互
-隔离的缓存分区。因为仅凭浏览器名称无法可靠识别当前登录账号，出于会员内容隐私考虑，
+与不同内容的 Cookie 文件使用相互隔离的缓存分区。因为仅凭浏览器名称无法可靠识别
+当前登录账号，出于会员内容隐私考虑，
 `--resume` 暂时不能和 `--cookies-from-browser` 同时使用；需要登录并恢复时请使用
-`--cookies-file`。不传 `--resume` 即可强制重新识别。要删除缓存，可在 Finder 中使用
-“前往文件夹”打开上述目录并删除其中内容。
+`--cookies-file`。不传 `--resume` 即可强制重新识别。
+
+查看完整字幕和未完成任务占用的空间：
+
+```bash
+./.venv/bin/youtubetext cache
+./.venv/bin/youtubetext cache --json
+```
+
+该命令只读，不会删除任何文件。要手动删除全部缓存，可在 Finder 中使用“前往文件夹”
+打开 `~/Library/Caches/YouTubeText/`。
 
 需要登录才能访问的视频，可以直接使用本机浏览器的登录状态：
 

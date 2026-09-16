@@ -37,6 +37,33 @@ class ResumeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CacheUsage:
+    root: Path
+    transcript_count: int = 0
+    transcript_bytes: int = 0
+    task_count: int = 0
+    task_bytes: int = 0
+
+    @property
+    def total_bytes(self) -> int:
+        return self.transcript_bytes + self.task_bytes
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "root": str(self.root),
+            "completed_transcripts": {
+                "count": self.transcript_count,
+                "bytes": self.transcript_bytes,
+            },
+            "incomplete_tasks": {
+                "count": self.task_count,
+                "bytes": self.task_bytes,
+            },
+            "total_bytes": self.total_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class OCRRecipe:
     """All inputs that can change Apple Vision's raw observations."""
 
@@ -162,6 +189,19 @@ class LocalResumeStore:
         self._locks = self.root / "locks"
         self._lock_poll_seconds = float(lock_poll_seconds)
         self._temp_root = Path(temp_root).expanduser() if temp_root else None
+
+    def usage(self) -> CacheUsage:
+        """Return aggregate cache size without exposing task or source identities."""
+
+        transcript_count, transcript_bytes = _flat_json_usage(self._transcripts.root)
+        task_count, task_bytes = _task_tree_usage(self._tasks)
+        return CacheUsage(
+            root=self.root,
+            transcript_count=transcript_count,
+            transcript_bytes=transcript_bytes,
+            task_count=task_count,
+            task_bytes=task_bytes,
+        )
 
     async def run(
         self,
@@ -607,6 +647,67 @@ def _finite_number(value: object) -> float:
     if not math.isfinite(number):
         raise ValueError("cached OCR number is not finite")
     return number
+
+
+def _flat_json_usage(root: Path) -> tuple[int, int]:
+    count = 0
+    size = 0
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                try:
+                    if not entry.name.endswith(".json") or not entry.is_file(
+                        follow_symlinks=False
+                    ):
+                        continue
+                    count += 1
+                    size += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0, 0
+    return count, size
+
+
+def _task_tree_usage(root: Path) -> tuple[int, int]:
+    count = 0
+    size = 0
+    try:
+        with os.scandir(root) as entries:
+            task_directories = []
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        task_directories.append(Path(entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        return 0, 0
+
+    for task_directory in task_directories:
+        count += 1
+        size += _regular_tree_bytes(task_directory)
+    return count, size
+
+
+def _regular_tree_bytes(root: Path) -> int:
+    size = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            size += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return size
 
 
 def _atomic_json(path: Path, payload: object) -> bool:
