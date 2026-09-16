@@ -424,16 +424,20 @@ Módulos principales:
 ## Limitaciones actuales
 
 - macOS con Apple Silicon y Windows x64 superan la suite automatizada de CI.
-  Aún falta validar un vídeo real de extremo a extremo en un equipo físico con Windows.
-- `cache clear-incomplete` aún no está implementado en Windows.
+  En Windows CI también se prueban modelos OCR y Whisper locales reales y el
+  flujo sin conexión desde la CLI hasta la exportación. Aún falta validar un
+  vídeo real de extremo a extremo en un equipo físico con Windows; las URL
+  públicas pueden rechazar los ejecutores alojados de CI.
+- `cache clear-incomplete` sigue sin estar disponible en Windows: el borrado
+  seguro ante junctions y reparse points requiere más validación.
 - El acceso a las plataformas depende de yt-dlp y puede verse afectado por la
   región, la cuenta, las cookies o los cambios de la plataforma.
 - El OCR de Apple Vision está optimizado para subtítulos cerca de la parte
   inferior del fotograma. Otros diseños o textos muy estilizados pueden requerir
   el modo Whisper.
-- Los metadatos y las rutas de medios temporales de Bilibili se han probado en
-  directo; la compatibilidad con subtítulos todavía necesita pruebas más amplias
-  en vídeos públicos.
+- La transcripción completa de Bilibili se ha probado en directo en macOS; la
+  compatibilidad con subtítulos todavía necesita pruebas más amplias en vídeos
+  públicos.
 - Whisper no puede reanudarse desde una posición intermedia de inferencia.
 
 ## Referencia y avisos

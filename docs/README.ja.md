@@ -408,15 +408,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 ## 現在の制限
 
 - Apple Silicon搭載macOSとWindows x64は自動CIテストに合格しています。
-  Windows実機での動画を使ったエンドツーエンドの動作確認はまだ行っていません。
-- Windowsの`cache clear-incomplete`は未実装です。
+  Windows CIでは実際のローカルOCR・Whisperモデルと、オフラインのCLIから
+  エクスポートまでの処理も検証済みです。Windows実機での実動画を使った
+  エンドツーエンドの確認はまだ行っていません。公開URLはホスト型CIからの
+  アクセスを拒否する場合があります。
+- Windowsの`cache clear-incomplete`は現在利用できません。junctionや
+  reparse pointをまたぐ安全な削除には、追加の検証が必要です。
 - プラットフォームへのアクセスはyt-dlpに依存し、地域、アカウント、Cookie、
   プラットフォームの変更による影響を受ける場合があります。
 - Apple Vision OCRは、フレーム下部付近の字幕向けに最適化されています。
   その他のレイアウトや大きく装飾されたテキストでは、Whisperモードが必要になる
   場合があります。
-- Bilibiliのメタデータと一時メディアパスは実際の環境で検証済みですが、字幕の
-  互換性については、公開動画を使ったより広範なテストが必要です。
+- Bilibili動画のエンドツーエンドの文字起こしはmacOSで実際に検証済みです。
+  プラットフォーム字幕の互換性は、公開動画を使ったより広範なテストが必要です。
 - Whisperは、推論途中の位置から再開できません。
 
 ## 参考資料とライセンス表記

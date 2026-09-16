@@ -409,15 +409,18 @@ Primary modules:
 
 ## Current limitations
 
-- macOS Apple Silicon and Windows x64 pass the automated CI suite. A real-video
-  end-to-end run on a physical Windows machine is still pending.
-- Windows `cache clear-incomplete` is not yet implemented.
+- macOS Apple Silicon and Windows x64 pass the automated CI suite. Windows CI
+  also runs real local OCR and Whisper models plus an offline CLI-to-export
+  transcript. A live-video end-to-end run on a physical Windows machine is
+  still pending; public URLs can reject hosted CI runners.
+- Windows `cache clear-incomplete` remains unavailable because safe deletion
+  across Windows junctions and reparse points needs additional validation.
 - Platform access depends on yt-dlp and may be affected by region, account,
   cookies, or platform changes.
 - Apple Vision OCR is optimized for subtitles near the bottom of the frame.
   Other layouts or heavily stylized text may require Whisper mode.
-- Bilibili metadata and temporary media paths have been exercised live; caption
-  compatibility still needs broader testing across public videos.
+- Bilibili end-to-end transcription has been exercised live on macOS; platform
+  caption compatibility still needs broader testing across public videos.
 - Whisper cannot resume from an intermediate inference position.
 
 ## Reference and notices

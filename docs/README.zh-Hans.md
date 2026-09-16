@@ -385,12 +385,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 
 ## 当前限制
 
-- macOS Apple Silicon 与 Windows x64 已通过自动化 CI 测试；实体 Windows 电脑上的真实视频端到端验证仍待完成。
-- Windows 的 `cache clear-incomplete` 尚未实现。
+- macOS Apple Silicon 与 Windows x64 已通过自动化 CI 测试。Windows CI 还使用真实本地 OCR、Whisper 模型，以及离线的命令行到导出全流程进行了验证；实体 Windows 电脑上的真实视频端到端验证仍待完成，公开视频网址也可能拒绝托管 CI 机器。
+- Windows 的 `cache clear-incomplete` 暂不可用；跨 junction 和 reparse point 的安全删除仍需进一步验证。
 - 平台访问取决于 yt-dlp，并可能受到地区、账号、Cookie 或平台变更的影响。
 - Apple Vision OCR 已针对画面底部附近的字幕进行优化。其他布局或高度风格化的
   文字可能需要使用 Whisper 模式。
-- 已通过实时测试验证 Bilibili 元数据和临时媒体路径；平台字幕兼容性仍需在更多
+- 已在 macOS 上实际验证 Bilibili 视频的端到端转录；平台字幕兼容性仍需在更多
   公开视频上进行测试。
 - Whisper 无法从推理过程的中间位置断点续跑。
 
