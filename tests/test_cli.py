@@ -612,6 +612,19 @@ def test_doctor_json_and_failed_requirement_exit_nonzero(monkeypatch):
     assert json.loads(result.output)["ready"] is False
 
 
+def test_doctor_without_model_catalogue_omits_cache_claim(monkeypatch):
+    report = DoctorReport(
+        checks=(DiagnosticCheck("windows_x64", True, True, "Windows detected"),),
+        whisper_models=(),
+    )
+    monkeypatch.setattr(cli, "diagnose", lambda: report)
+
+    result = CliRunner().invoke(cli.main, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Whisper cache:" not in result.output
+
+
 def test_cache_command_reports_storage_without_loading_runtime(monkeypatch):
     usage = CacheUsage(
         root=Path("/cache-test"),

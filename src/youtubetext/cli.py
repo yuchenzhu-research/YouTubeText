@@ -433,9 +433,10 @@ def _render_doctor(report: DoctorReport, console: Console) -> None:
         mark = "[green]✓[/green]" if check.ok else "[red]✗[/red]"
         requirement = "" if check.required else " [dim](optional)[/dim]"
         console.print(f"{mark} {check.key}{requirement}: {check.detail}")
-    cached = [model.name for model in report.whisper_models if model.cached]
-    model_detail = ", ".join(cached) if cached else "none (downloaded on first use)"
-    console.print(f"Whisper cache: {model_detail}")
+    if report.whisper_models:
+        cached = [model.name for model in report.whisper_models if model.cached]
+        model_detail = ", ".join(cached) if cached else "none (downloaded on first use)"
+        console.print(f"Whisper cache: {model_detail}")
     status = "ready" if report.ready else "not ready"
     style = "green" if report.ready else "red"
     console.print(f"[{style}]{status}[/{style}]")

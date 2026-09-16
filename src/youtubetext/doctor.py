@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from .asr.models import MODELS, WhisperModel, WhisperModelCache
 from .ocr.vision import find_vision_ocr_binary
+from .runtime import HostKind, HostProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,34 +119,29 @@ class Doctor:
         self._vision_binary = vision_binary or find_vision_ocr_binary
         self._vision_probe = vision_probe or _probe_vision_binary
         self._import_module = import_module or importlib.import_module
-        self._model_cache = model_cache or WhisperModelCache()
+        self._model_cache = model_cache
 
     def run(self) -> DoctorReport:
         system = self._system()
         machine = self._machine()
+        host = HostProfile(system, machine, memory_bytes=0, cpu_count=1)
 
-        checks = [
-            DiagnosticCheck(
-                key="macos",
-                ok=system == "Darwin",
-                required=True,
-                detail=(
-                    f"macOS detected ({system})"
-                    if system == "Darwin"
-                    else f"requires macOS; detected {system or 'unknown'}"
-                ),
-            ),
-            DiagnosticCheck(
-                key="apple_silicon",
-                ok=machine == "arm64",
-                required=True,
-                detail=(
-                    "Apple Silicon detected (arm64)"
-                    if machine == "arm64"
-                    else f"requires Apple Silicon; detected {machine or 'unknown'}"
-                ),
-            ),
-        ]
+        if system.casefold() == "darwin":
+            checks = self._mac_host_checks(host)
+        elif system.casefold() == "windows":
+            checks = self._windows_host_checks(host)
+        else:
+            checks = [
+                DiagnosticCheck(
+                    key="supported_host",
+                    ok=False,
+                    required=True,
+                    detail=(
+                        "requires Apple Silicon macOS or 64-bit Windows; "
+                        f"detected {system or 'unknown'} {machine or 'unknown'}"
+                    ),
+                )
+            ]
 
         ffmpeg = _path_from_probe(self._which("ffmpeg"))
         checks.append(
@@ -158,6 +154,69 @@ class Doctor:
             )
         )
 
+        if system.casefold() == "darwin":
+            checks.extend(self._mac_backend_checks())
+            models = self._cached_models()
+            cached_names = [model.name for model in models if model.cached]
+            checks.append(
+                DiagnosticCheck(
+                    key="whisper_cache",
+                    ok=bool(cached_names),
+                    required=False,
+                    detail=(
+                        f"cached Whisper models: {', '.join(cached_names)}"
+                        if cached_names
+                        else "no Whisper model is cached; the selected model downloads on first use"
+                    ),
+                )
+            )
+        elif system.casefold() == "windows":
+            checks.extend(self._windows_backend_checks())
+            # faster-whisper uses CTranslate2 weights, not the MLX catalogue.
+            # Keep the list empty until its separate cache format is inspected.
+            models = ()
+        else:
+            models = ()
+        return DoctorReport(checks=tuple(checks), whisper_models=models)
+
+    @staticmethod
+    def _mac_host_checks(host: HostProfile) -> list[DiagnosticCheck]:
+        return [
+            DiagnosticCheck(
+                key="macos",
+                ok=host.system.casefold() == "darwin",
+                required=True,
+                detail=f"macOS detected ({host.system})",
+            ),
+            DiagnosticCheck(
+                key="apple_silicon",
+                ok=host.kind is HostKind.APPLE_SILICON,
+                required=True,
+                detail=(
+                    "Apple Silicon detected (arm64)"
+                    if host.kind is HostKind.APPLE_SILICON
+                    else f"requires Apple Silicon; detected {host.machine or 'unknown'}"
+                ),
+            ),
+        ]
+
+    @staticmethod
+    def _windows_host_checks(host: HostProfile) -> list[DiagnosticCheck]:
+        supported = host.kind is HostKind.WINDOWS_X64
+        return [
+            DiagnosticCheck(
+                key="windows_x64",
+                ok=supported,
+                required=True,
+                detail=(
+                    f"64-bit Windows detected ({host.machine})"
+                    if supported
+                    else f"requires 64-bit x86 Windows; detected {host.machine or 'unknown'}"
+                ),
+            )
+        ]
+
+    def _mac_backend_checks(self) -> list[DiagnosticCheck]:
         vision = _path_from_probe(self._vision_binary())
         if vision is None:
             vision_ok = False
@@ -168,32 +227,165 @@ class Doctor:
             except Exception as exc:
                 vision_ok = False
                 vision_detail = f"Swift Apple Vision OCR helper failed: {_one_line_error(exc)}"
-        checks.append(
+        return [
             DiagnosticCheck(
                 key="vision_ocr",
                 ok=vision_ok,
                 required=True,
                 detail=vision_detail,
                 path=vision,
+            ),
+            self._check_mlx_whisper(),
+        ]
+
+    def _windows_backend_checks(self) -> list[DiagnosticCheck]:
+        checks = [
+            self._check_module_api(
+                "rapidocr",
+                "RapidOCR",
+                key="rapidocr",
+                label="RapidOCR",
+            ),
+            self._check_onnxruntime(),
+            self._check_module_api(
+                "faster_whisper",
+                "WhisperModel",
+                key="faster_whisper",
+                label="faster-whisper",
+            ),
+        ]
+        checks.extend(self._check_ctranslate2())
+        return checks
+
+    def _check_module_api(
+        self,
+        module_name: str,
+        attribute: str,
+        *,
+        key: str,
+        label: str,
+    ) -> DiagnosticCheck:
+        """Resolve a public engine class without constructing or downloading it."""
+
+        try:
+            module = self._import_module(module_name)
+            api = getattr(module, attribute)
+            if not callable(api):
+                raise TypeError(f"{module_name}.{attribute} is not callable")
+        except Exception as exc:
+            return DiagnosticCheck(
+                key=key,
+                ok=False,
+                required=True,
+                detail=f"{label} cannot be loaded: {_one_line_error(exc)}",
             )
+        return DiagnosticCheck(
+            key=key,
+            ok=True,
+            required=True,
+            detail=_available_detail(label, module),
         )
 
-        checks.append(self._check_mlx_whisper())
-        models = self._cached_models()
-        cached_names = [model.name for model in models if model.cached]
-        checks.append(
-            DiagnosticCheck(
-                key="whisper_cache",
-                ok=bool(cached_names),
-                required=False,
-                detail=(
-                    f"cached Whisper models: {', '.join(cached_names)}"
-                    if cached_names
-                    else "no Whisper model is cached; the selected model downloads on first use"
-                ),
+    def _check_onnxruntime(self) -> DiagnosticCheck:
+        try:
+            module = self._import_module("onnxruntime")
+            provider_probe = getattr(module, "get_available_providers")
+            if not callable(provider_probe):
+                raise TypeError("onnxruntime.get_available_providers is not callable")
+            providers = {str(provider) for provider in provider_probe()}
+            if "CPUExecutionProvider" not in providers:
+                return DiagnosticCheck(
+                    key="onnxruntime_cpu",
+                    ok=False,
+                    required=True,
+                    detail="ONNX Runtime has no CPUExecutionProvider",
+                )
+        except Exception as exc:
+            return DiagnosticCheck(
+                key="onnxruntime_cpu",
+                ok=False,
+                required=True,
+                detail=f"ONNX Runtime cannot be loaded: {_one_line_error(exc)}",
             )
+        return DiagnosticCheck(
+            key="onnxruntime_cpu",
+            ok=True,
+            required=True,
+            detail=_available_detail("ONNX Runtime CPU", module),
         )
-        return DoctorReport(checks=tuple(checks), whisper_models=models)
+
+    def _check_ctranslate2(self) -> list[DiagnosticCheck]:
+        try:
+            module = self._import_module("ctranslate2")
+            compute_probe = getattr(module, "get_supported_compute_types")
+            if not callable(compute_probe):
+                raise TypeError(
+                    "ctranslate2.get_supported_compute_types is not callable"
+                )
+            cpu_types = {
+                str(compute_type).casefold()
+                for compute_type in compute_probe("cpu")
+            }
+            cpu_ok = "int8" in cpu_types
+            cpu_detail = (
+                _available_detail("CTranslate2 CPU int8", module)
+                if cpu_ok
+                else "CTranslate2 does not support CPU int8 on this host"
+            )
+        except Exception as exc:
+            detail = _one_line_error(exc)
+            return [
+                DiagnosticCheck(
+                    key="ctranslate2_cpu",
+                    ok=False,
+                    required=True,
+                    detail=f"CTranslate2 CPU cannot be loaded: {detail}",
+                ),
+                DiagnosticCheck(
+                    key="cuda",
+                    ok=False,
+                    required=False,
+                    detail="CUDA availability could not be checked",
+                ),
+            ]
+
+        cpu_check = DiagnosticCheck(
+            key="ctranslate2_cpu",
+            ok=cpu_ok,
+            required=True,
+            detail=cpu_detail,
+        )
+        try:
+            device_probe = getattr(module, "get_cuda_device_count")
+            if not callable(device_probe):
+                raise TypeError("ctranslate2.get_cuda_device_count is not callable")
+            device_count = int(device_probe())
+            cuda_types = (
+                {
+                    str(compute_type).casefold()
+                    for compute_type in compute_probe("cuda")
+                }
+                if device_count > 0
+                else set()
+            )
+            cuda_ok = device_count > 0 and "float16" in cuda_types
+            cuda_detail = (
+                f"CUDA float16 is available on {device_count} device(s)"
+                if cuda_ok
+                else "CUDA float16 is unavailable; CPU int8 will be used"
+            )
+        except Exception as exc:
+            cuda_ok = False
+            cuda_detail = f"CUDA probe failed; CPU int8 will be used: {_one_line_error(exc)}"
+        return [
+            cpu_check,
+            DiagnosticCheck(
+                key="cuda",
+                ok=cuda_ok,
+                required=False,
+                detail=cuda_detail,
+            ),
+        ]
 
     def _check_mlx_whisper(self) -> DiagnosticCheck:
         try:
@@ -215,13 +407,14 @@ class Doctor:
         )
 
     def _cached_models(self) -> tuple[CachedModelStatus, ...]:
+        model_cache = self._model_cache or WhisperModelCache()
         statuses: list[CachedModelStatus] = []
         for model in MODELS.values():
             try:
-                cached_directory = self._model_cache.cached_directory(model)
+                cached_directory = model_cache.cached_directory(model)
             except OSError:
                 cached_directory = None
-            directory = cached_directory or self._model_cache.directory_for(model)
+            directory = cached_directory or model_cache.directory_for(model)
             statuses.append(
                 CachedModelStatus(
                     name=model.name,
@@ -250,6 +443,14 @@ def _path_from_probe(value: str | Path | None) -> Path | None:
 def _one_line_error(exc: Exception) -> str:
     message = " ".join(str(exc).split()) or exc.__class__.__name__
     return f"{exc.__class__.__name__}: {message}"[:300]
+
+
+def _available_detail(label: str, module: ModuleType | Any) -> str:
+    try:
+        version = str(getattr(module, "__version__", "") or "").strip()
+    except Exception:
+        version = ""
+    return f"{label} is available" + (f" ({version})" if version else "")
 
 
 def _probe_vision_binary(binary: Path) -> tuple[bool, str]:
