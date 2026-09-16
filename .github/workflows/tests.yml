@@ -45,5 +45,9 @@ jobs:
       - name: Import core modules
         run: uv run --no-sync python -c "import youtubetext.cli, youtubetext.acquisition, youtubetext.resume"
 
+      - name: Isolate process-interruption test
+        if: runner.os == 'macOS'
+        run: uv run --no-sync pytest tests/test_supervisor.py::test_interrupt_terminates_the_worker_process_group -vv
+
       - name: Run unit tests
         run: uv run --no-sync pytest

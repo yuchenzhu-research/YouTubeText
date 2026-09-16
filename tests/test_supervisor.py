@@ -103,7 +103,8 @@ raise SystemExit(run_supervised(command, temp_parent=temp_parent, grace_seconds=
         ],
         start_new_session=True,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
     )
 
     details: dict[str, object] = {}
@@ -118,7 +119,8 @@ raise SystemExit(run_supervised(command, temp_parent=temp_parent, grace_seconds=
         assert details, "worker process tree did not start"
 
         os.kill(supervisor.pid, signal.SIGINT)
-        assert supervisor.wait(timeout=5) == 130
+        _stdout, stderr = supervisor.communicate(timeout=5)
+        assert supervisor.returncode == 130, stderr
 
         deadline = time.monotonic() + 2
         process_ids = (int(details["worker"]), int(details["grandchild"]))
