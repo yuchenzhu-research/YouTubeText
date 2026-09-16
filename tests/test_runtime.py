@@ -4,11 +4,23 @@ import threading
 import pytest
 
 from youtubetext.domain import TaskResult
-from youtubetext.runtime import CapacityPlan, HostProfile, TaskScheduler, run_blocking
+import youtubetext.runtime as runtime_module
+from youtubetext.runtime import (
+    CapacityPlan,
+    HostKind,
+    HostProfile,
+    TaskScheduler,
+    detect_host,
+    run_blocking,
+)
 
 
 def host(memory_gib: int) -> HostProfile:
     return HostProfile("Darwin", "arm64", memory_gib * 1024**3, 10)
+
+
+def windows_host(memory_gib: int, cpu_count: int = 8) -> HostProfile:
+    return HostProfile("Windows", "AMD64", memory_gib * 1024**3, cpu_count)
 
 
 def test_capacity_plan_uses_small_model_on_low_memory_mac():
@@ -25,9 +37,50 @@ def test_capacity_plan_uses_turbo_and_bounded_manual_jobs():
     assert plan.asr_slots == 1
 
 
+def test_windows_x64_uses_conservative_local_model_capacity():
+    profile = windows_host(32, cpu_count=8)
+
+    plan = CapacityPlan.for_host(profile)
+
+    assert profile.kind is HostKind.WINDOWS_X64
+    assert profile.supported
+    assert plan.task_slots == 2
+    assert plan.network_slots == 2
+    assert plan.ocr_slots == 1
+    assert plan.asr_slots == 1
+    assert plan.whisper_model == "small"
+
+
+def test_windows_manual_jobs_remain_bounded():
+    plan = CapacityPlan.for_host(windows_host(8, cpu_count=2), requested_jobs=99)
+
+    assert plan.task_slots == 8
+    assert plan.ocr_slots == 1
+    assert plan.asr_slots == 1
+
+
+def test_detect_host_reads_windows_memory_and_machine(monkeypatch):
+    monkeypatch.setattr(runtime_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(runtime_module.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(runtime_module, "_windows_physical_memory", lambda: 24 * 1024**3)
+    monkeypatch.setattr(runtime_module.os, "cpu_count", lambda: 12)
+
+    profile = detect_host()
+
+    assert profile == HostProfile("Windows", "AMD64", 24 * 1024**3, 12)
+    assert profile.kind is HostKind.WINDOWS_X64
+
+
 def test_unsupported_host_is_rejected():
-    with pytest.raises(RuntimeError, match="Apple Silicon"):
+    with pytest.raises(RuntimeError, match="64-bit Windows"):
         CapacityPlan.for_host(HostProfile("Linux", "x86_64", 16 * 1024**3, 8))
+
+
+def test_windows_arm_is_not_claimed_as_supported():
+    profile = HostProfile("Windows", "ARM64", 16 * 1024**3, 8)
+
+    assert profile.kind is HostKind.UNSUPPORTED
+    assert not profile.supported
 
 
 @pytest.mark.asyncio

@@ -503,6 +503,24 @@ def test_plan_json_reports_unvalidated_caption_and_download_route(
     assert not (tmp_path / "must-not-exist").exists()
 
 
+def test_plan_runs_with_windows_x64_capacity(monkeypatch):
+    install_fake_planning_runtime(monkeypatch, [planned_result(URL_1)])
+    monkeypatch.setattr(
+        cli,
+        "detect_host",
+        lambda: HostProfile("Windows", "AMD64", 16 * 1024**3, 8),
+    )
+
+    result = CliRunner().invoke(cli.main, [URL_1, "--plan", "--json"])
+
+    assert result.exit_code == 0, result.output
+    engine = FakePlanningEngine.created[0]
+    assert engine.capacity_plan.task_slots == 2
+    assert engine.capacity_plan.ocr_slots == 1
+    assert engine.capacity_plan.asr_slots == 1
+    assert engine.capacity_plan.whisper_model == "small"
+
+
 def test_plan_human_output_marks_unprocessable_captions_mode(monkeypatch):
     install_fake_planning_runtime(
         monkeypatch,
