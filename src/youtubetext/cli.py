@@ -18,6 +18,7 @@ from .acquisition import TranscriptPipeline
 from .doctor import DoctorReport, diagnose
 from .domain import ProcessingMode, TaskOptions, TaskResult
 from .engine import YouTubeTextEngine
+from .planning import PlanResult, ProcessingPlan
 from .progress import ProgressEvent, discard_progress
 from .resume import CacheCleanup, CacheUsage, LocalResumeStore
 from .runtime import CapacityPlan, detect_host
@@ -119,6 +120,12 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     is_flag=True,
     help="Reuse a compatible completed transcript from the local cache.",
 )
+@click.option(
+    "--plan",
+    "plan_only",
+    is_flag=True,
+    help="Inspect metadata and forecast processing without downloading files.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Write machine-readable JSON.")
 @click.option(
     "--doctor",
@@ -139,6 +146,7 @@ def main(
     cookies_from_browser: str | None,
     cookies_file: Path | None,
     resume: bool,
+    plan_only: bool,
     json_output: bool,
     doctor_mode: bool,
 ) -> None:
@@ -171,6 +179,11 @@ def main(
             "browser account changes cannot be safely isolated; use --cookies-file "
             "or run without --resume"
         )
+    if plan_only and resume:
+        raise click.UsageError(
+            "--plan does not inspect resume state; remove --resume to view the "
+            "fresh-run plan"
+        )
 
     try:
         plan = CapacityPlan.for_host(detect_host(), requested_jobs=jobs)
@@ -189,12 +202,35 @@ def main(
         )
         engine = YouTubeTextEngine(_transcript_pipeline(auth, resume=resume), plan)
         console = Console(stderr=True, highlight=False)
-        progress = discard_progress if json_output else _progress_sink(console)
-        results = asyncio.run(engine.process(list(urls), options, progress=progress))
+        if plan_only:
+            plan_results = asyncio.run(engine.plan(list(urls), options))
+        else:
+            progress = discard_progress if json_output else _progress_sink(console)
+            results = asyncio.run(engine.process(list(urls), options, progress=progress))
     except click.ClickException:
         raise
     except Exception as exc:
         _fatal_error(exc, json_output=json_output)
+        return
+
+    if plan_only:
+        ready = all(_plan_result_ready(result) for result in plan_results)
+        if json_output:
+            click.echo(
+                json.dumps(
+                    {
+                        "success": ready,
+                        "results": [
+                            _plan_result_payload(result) for result in plan_results
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            _render_plans(plan_results, console)
+        if not ready:
+            raise click.exceptions.Exit(1)
         return
 
     succeeded = all(result.succeeded for result in results)
@@ -232,12 +268,19 @@ def requires_supervised_worker(arguments: tuple[str, ...]) -> bool:
     try:
         urls = tuple(context.params.get("urls") or ())
         doctor_mode = bool(context.params.get("doctor_mode"))
+        plan_only = bool(context.params.get("plan_only"))
     finally:
         context.close()
 
     doctor_command = len(urls) == 1 and urls[0].casefold() == "doctor"
     cache_command = bool(urls) and urls[0].casefold() == "cache"
-    return bool(urls) and not doctor_mode and not doctor_command and not cache_command
+    return (
+        bool(urls)
+        and not doctor_mode
+        and not doctor_command
+        and not cache_command
+        and not plan_only
+    )
 
 
 def _transcript_pipeline(
@@ -328,6 +371,62 @@ def _render_results(results: list[TaskResult], console: Console) -> None:
             console.print(f"[red]✗[/red] {result.url}: {detail}")
 
 
+def _plan_result_ready(result: PlanResult) -> bool:
+    return result.succeeded and result.plan is not None and result.plan.processable
+
+
+def _render_plans(results: list[PlanResult], console: Console) -> None:
+    console.print("[bold]YouTubeText preflight plan[/bold]")
+    for result in results:
+        if not result.succeeded or result.plan is None:
+            detail = result.error or "metadata inspection did not produce a plan"
+            console.print(f"[red]✗[/red] {result.url}: {detail}")
+            continue
+
+        plan = result.plan
+        mark = "[green]✓[/green]" if plan.processable else "[yellow]![/yellow]"
+        console.print(f"{mark} {plan.metadata.title}")
+        console.print(
+            f"  Source: {plan.metadata.platform} · "
+            f"{_format_duration(plan.metadata.duration_seconds)}"
+        )
+        if plan.advertised_subtitle is None:
+            console.print("  Caption: none advertised")
+        else:
+            subtitle = plan.advertised_subtitle
+            console.print(
+                f"  Caption: {subtitle.kind.value} {subtitle.language} "
+                "(advertised, not validated)"
+            )
+        console.print(f"  Route: {plan.route.value}")
+        console.print(
+            "  Downloads: subtitle "
+            f"{plan.subtitle_download_requirement.value}; "
+            f"media {_format_planned_media(plan)}"
+        )
+        console.print(f"  Cache assumption: {plan.cache_assumption.value}")
+        console.print(f"  Note: {plan.reason}")
+
+
+def _format_planned_media(plan: ProcessingPlan) -> str:
+    requirement = plan.media_download_requirement.value
+    if plan.media_purpose is None:
+        return requirement
+    detail = f"{requirement} ({plan.media_purpose.value}"
+    if plan.fallback_media_purpose is not None:
+        detail += f"; fallback {plan.fallback_media_purpose.value}"
+    return detail + ")"
+
+
+def _format_duration(seconds: float) -> str:
+    total = max(0, round(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:d}:{seconds:02d}"
+
+
 def _render_doctor(report: DoctorReport, console: Console) -> None:
     console.print("[bold]YouTubeText doctor[/bold]")
     for check in report.checks:
@@ -402,6 +501,15 @@ def _result_payload(result: TaskResult) -> dict[str, Any]:
             "metadata": str(result.output.metadata),
         }
     return payload
+
+
+def _plan_result_payload(result: PlanResult) -> dict[str, Any]:
+    return {
+        "url": result.url,
+        "success": _plan_result_ready(result),
+        "error": result.error or None,
+        "plan": result.plan.as_dict() if result.plan is not None else None,
+    }
 
 
 def _fatal_error(exc: Exception, *, json_output: bool) -> None:

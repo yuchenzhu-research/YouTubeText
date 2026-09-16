@@ -21,9 +21,11 @@ from youtubetext.domain import (
     TranscriptMethod,
     TranscriptSegment,
 )
+from youtubetext.planning import PlanResult, build_processing_plan
 from youtubetext.progress import ProgressEvent, Stage
 from youtubetext.resume import CacheCleanup, CacheUsage, LocalResumeStore
 from youtubetext.runtime import HostProfile
+from youtubetext.sources import SourceInspection, SubtitleAvailability, SubtitleKind
 
 URL_1 = "https://youtu.be/first"
 URL_2 = "https://www.bilibili.com/video/BV1second"
@@ -65,6 +67,26 @@ class FakeEngine:
         return list(self.results)
 
 
+class FakePlanningEngine:
+    created: list["FakePlanningEngine"] = []
+    results: list[PlanResult] = []
+
+    def __init__(self, pipeline, capacity_plan):
+        self.pipeline = pipeline
+        self.capacity_plan = capacity_plan
+        self.urls: list[str] = []
+        self.options: TaskOptions | None = None
+        FakePlanningEngine.created.append(self)
+
+    async def plan(self, urls, options):
+        self.urls = list(urls)
+        self.options = options
+        return list(self.results)
+
+    async def process(self, *_args, **_kwargs):
+        raise AssertionError("--plan must not process or export transcripts")
+
+
 def install_fake_runtime(monkeypatch, results):
     FakeEngine.created = []
     FakeEngine.results = list(results)
@@ -79,6 +101,41 @@ def install_fake_runtime(monkeypatch, results):
     return pipeline
 
 
+def install_fake_planning_runtime(monkeypatch, results):
+    FakePlanningEngine.created = []
+    FakePlanningEngine.results = list(results)
+    pipeline = object()
+    monkeypatch.setattr(cli, "TranscriptPipeline", lambda: pipeline)
+    monkeypatch.setattr(cli, "YouTubeTextEngine", FakePlanningEngine)
+    monkeypatch.setattr(
+        cli,
+        "detect_host",
+        lambda: HostProfile("Darwin", "arm64", 48 * 1024**3, 12),
+    )
+    return pipeline
+
+
+def planned_result(
+    url: str,
+    *,
+    mode: ProcessingMode = ProcessingMode.AUTO,
+    subtitle: SubtitleAvailability | None = None,
+) -> PlanResult:
+    platform = "bilibili" if "bilibili" in url else "youtube"
+    metadata = SourceMetadata(
+        url,
+        platform,
+        "id",
+        "Planning video",
+        author="Creator",
+        duration_seconds=125,
+    )
+    return PlanResult(
+        url=url,
+        plan=build_processing_plan(SourceInspection(metadata, subtitle), mode),
+    )
+
+
 def test_help_and_version_do_not_require_a_url():
     runner = CliRunner()
 
@@ -91,6 +148,7 @@ def test_help_and_version_do_not_require_a_url():
     assert "--cookies-from-browser" in help_result.output
     assert "--cookies-file" in help_result.output
     assert "--resume" in help_result.output
+    assert "--plan" in help_result.output
     assert "youtubetext cache" in help_result.output
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
@@ -102,6 +160,8 @@ def test_help_and_version_do_not_require_a_url():
     [
         ((URL_1,), True),
         ((URL_1, URL_2, "--json"), True),
+        ((URL_1, "--plan"), False),
+        ((URL_1, URL_2, "--plan", "--json"), False),
         ((), False),
         (("--help",), False),
         (("-h",), False),
@@ -391,6 +451,110 @@ def test_json_output_is_ordered_and_contains_no_progress(monkeypatch, tmp_path):
     assert payload["results"][0]["output"]["text"].endswith("transcript.txt")
     assert payload["results"][1]["error"] == "failed"
     assert "Metadata read" not in result.output
+
+
+def test_plan_json_reports_unvalidated_caption_and_download_route(
+    monkeypatch,
+    tmp_path,
+):
+    subtitle = SubtitleAvailability("zh-Hant", SubtitleKind.MANUAL)
+    pipeline = install_fake_planning_runtime(
+        monkeypatch,
+        [planned_result(URL_1, subtitle=subtitle)],
+    )
+
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            URL_1,
+            "--plan",
+            "--json",
+            "--language",
+            "zh-Hant",
+            "--jobs",
+            "2",
+            "--output",
+            str(tmp_path / "must-not-exist"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    planned = payload["results"][0]
+    assert planned["success"] is True
+    assert planned["error"] is None
+    assert planned["plan"]["advertised_subtitle"] == {
+        "language": "zh-Hant",
+        "kind": "manual",
+        "validation": "advertised-unvalidated",
+    }
+    assert planned["plan"]["route"] == "platform-captions->ocr->whisper"
+    assert planned["plan"]["media_download_requirement"] == "conditional"
+    assert planned["plan"]["media_purpose"] == "analysis-video"
+    assert planned["plan"]["fallback_media_purpose"] == "audio"
+    assert planned["plan"]["cache_assumption"] == "no-resume-reuse"
+    engine = FakePlanningEngine.created[0]
+    assert engine.pipeline is pipeline
+    assert engine.urls == [URL_1]
+    assert engine.capacity_plan.task_slots == 2
+    assert engine.options is not None
+    assert engine.options.language == "zh-Hant"
+    assert not (tmp_path / "must-not-exist").exists()
+
+
+def test_plan_human_output_marks_unprocessable_captions_mode(monkeypatch):
+    install_fake_planning_runtime(
+        monkeypatch,
+        [planned_result(URL_1, mode=ProcessingMode.CAPTIONS)],
+    )
+
+    result = CliRunner().invoke(
+        cli.main,
+        [URL_1, "--plan", "--mode", "captions"],
+    )
+
+    assert result.exit_code == 1
+    assert "YouTubeText preflight plan" in result.output
+    assert "Caption: none advertised" in result.output
+    assert "Route: platform-captions" in result.output
+    assert "No platform caption track is advertised" in result.output
+    assert "Cache assumption: no-resume-reuse" in result.output
+
+
+def test_plan_preserves_result_order_and_metadata_failures(monkeypatch):
+    install_fake_planning_runtime(
+        monkeypatch,
+        [
+            planned_result(URL_1),
+            PlanResult(url=URL_2, error="metadata unavailable"),
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli.main,
+        [URL_1, URL_2, "--plan", "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert [item["url"] for item in payload["results"]] == [URL_1, URL_2]
+    assert payload["results"][1]["error"] == "metadata unavailable"
+    assert payload["results"][1]["plan"] is None
+
+
+def test_plan_rejects_resume_before_loading_runtime(monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "detect_host",
+        lambda: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+
+    result = CliRunner().invoke(cli.main, [URL_1, "--plan", "--resume"])
+
+    assert result.exit_code == 2
+    assert "does not inspect resume state" in result.output
 
 
 def test_doctor_command_calls_diagnose_without_url(monkeypatch, tmp_path):
