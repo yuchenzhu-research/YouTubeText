@@ -12,6 +12,7 @@ from pathlib import Path
 
 SUPERVISED_ENV = "YOUTUBETEXT_SUPERVISED_WORKER"
 RUN_TEMP_ENV = "YOUTUBETEXT_RUN_TEMP"
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 def run_supervised(
@@ -34,27 +35,54 @@ def run_supervised(
         child_environment[SUPERVISED_ENV] = "1"
         child_environment[RUN_TEMP_ENV] = str(run_root)
         child_environment["TMPDIR"] = str(run_root)
+        child_environment["TEMP"] = str(run_root)
+        child_environment["TMP"] = str(run_root)
         process = subprocess.Popen(
             [str(part) for part in command],
             env=child_environment,
-            start_new_session=True,
+            **_popen_options(),
         )
         try:
             return process.wait()
         except KeyboardInterrupt:
-            _terminate_process_group(process, grace_seconds=grace_seconds)
+            _terminate_process_tree(process, grace_seconds=grace_seconds)
             return 130
         except BaseException:
-            _terminate_process_group(process, grace_seconds=grace_seconds)
+            _terminate_process_tree(process, grace_seconds=grace_seconds)
             raise
 
 
-def _terminate_process_group(
+def _popen_options() -> dict[str, object]:
+    if os.name == "nt":
+        return {
+            "creationflags": getattr(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                _CREATE_NEW_PROCESS_GROUP,
+            )
+        }
+    return {"start_new_session": True}
+
+
+def _terminate_process_tree(
     process: subprocess.Popen,
     *,
     grace_seconds: float,
 ) -> None:
     """Stop and reap the isolated worker group with bounded escalation."""
+
+    if os.name == "nt":
+        _terminate_windows_process_tree(process, grace_seconds=grace_seconds)
+        return
+    _terminate_posix_process_group(process, grace_seconds=grace_seconds)
+
+
+def _terminate_posix_process_group(
+    process: subprocess.Popen,
+    *,
+    grace_seconds: float,
+) -> None:
+    """Escalate signals against one POSIX process group."""
 
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGKILL)
     for escalation in signals:
@@ -69,6 +97,39 @@ def _terminate_process_group(
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
+
+
+def _terminate_windows_process_tree(
+    process: subprocess.Popen,
+    *,
+    grace_seconds: float,
+) -> None:
+    """Offer Ctrl+Break, then use taskkill to include descendant processes."""
+
+    break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
+    if break_event is not None:
+        try:
+            process.send_signal(break_event)
+        except (OSError, ValueError):
+            pass
+        if _wait_for_process(process, grace_seconds):
+            return
+
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=max(5.0, grace_seconds),
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    if _wait_for_process(process, grace_seconds):
+        return
+    process.kill()
+    process.wait()
 
 
 def _signal_process_group(process: subprocess.Popen, value: signal.Signals) -> None:
@@ -98,3 +159,11 @@ def _wait_until_group_stops(
         if time.monotonic() >= deadline:
             return False
         time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+
+
+def _wait_for_process(process: subprocess.Popen, timeout_seconds: float) -> bool:
+    try:
+        process.wait(timeout=max(0.0, timeout_seconds))
+        return True
+    except subprocess.TimeoutExpired:
+        return False

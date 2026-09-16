@@ -8,6 +8,9 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
+import youtubetext._supervisor as supervisor_module
 from youtubetext._supervisor import RUN_TEMP_ENV, SUPERVISED_ENV, run_supervised
 
 
@@ -52,6 +55,7 @@ raise SystemExit(7)
     assert os.environ.get(SUPERVISED_ENV) != "1"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group integration test")
 def test_interrupt_terminates_the_worker_process_group(tmp_path: Path) -> None:
     state = tmp_path / "process-tree.json"
     worker_program = """
@@ -133,6 +137,58 @@ raise SystemExit(run_supervised(command, temp_parent=temp_parent, grace_seconds=
                 os.killpg(int(details["worker"]), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_popen_options_are_platform_specific(monkeypatch) -> None:
+    monkeypatch.setattr(supervisor_module.os, "name", "nt")
+    assert supervisor_module._popen_options() == {
+        "creationflags": supervisor_module._CREATE_NEW_PROCESS_GROUP
+    }
+
+    monkeypatch.setattr(supervisor_module.os, "name", "posix")
+    assert supervisor_module._popen_options() == {"start_new_session": True}
+
+
+def test_windows_termination_escalates_from_break_to_taskkill(monkeypatch) -> None:
+    class FakeProcess:
+        pid = 321
+
+        def __init__(self) -> None:
+            self.signals: list[int] = []
+            self.done = False
+            self.killed = False
+
+        def send_signal(self, value: int) -> None:
+            self.signals.append(value)
+
+        def wait(self, timeout=None) -> int:
+            if timeout is not None and not self.done:
+                raise subprocess.TimeoutExpired("worker", timeout)
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+            self.done = True
+
+    process = FakeProcess()
+    taskkill_calls: list[list[str]] = []
+
+    def taskkill(command, **_kwargs):
+        taskkill_calls.append(command)
+        process.done = True
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(supervisor_module.signal, "CTRL_BREAK_EVENT", 1, raising=False)
+    monkeypatch.setattr(supervisor_module.subprocess, "run", taskkill)
+
+    supervisor_module._terminate_windows_process_tree(
+        process,  # type: ignore[arg-type]
+        grace_seconds=0.01,
+    )
+
+    assert process.signals == [1]
+    assert taskkill_calls == [["taskkill", "/PID", "321", "/T", "/F"]]
+    assert not process.killed
 
 
 def _process_exists(process_id: int) -> bool:
