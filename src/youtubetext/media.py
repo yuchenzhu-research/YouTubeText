@@ -10,7 +10,6 @@ import asyncio
 import shutil
 import subprocess
 import time
-import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -75,6 +74,8 @@ class MediaDownloader:
             "retries": 5,
             "fragment_retries": 5,
             "socket_timeout": 30,
+            "continuedl": True,
+            "nopart": False,
         }
         if purpose is MediaPurpose.AUDIO:
             return {**common, "format": "bestaudio/best"}
@@ -91,7 +92,7 @@ class MediaDownloader:
 
     def _download_sync(self, url: str, directory: Path, purpose: MediaPurpose) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
-        stem = f"media_{uuid.uuid4().hex[:12]}"
+        stem = purpose.value
         template = directory / f"{stem}.%(ext)s"
         adapter = resolve_adapter(url)
         request_url = adapter.request_url(url)
@@ -133,7 +134,19 @@ class MediaDownloader:
         return candidates[0].resolve()
 
     async def download(self, url: str, directory: Path, purpose: MediaPurpose) -> Path:
-        return await asyncio.to_thread(self._download_sync, url, directory, purpose)
+        worker = asyncio.create_task(
+            asyncio.to_thread(self._download_sync, url, directory, purpose)
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # asyncio cannot stop a running thread. Wait for yt-dlp to leave the
+            # stable output/.part files before a resume lock may be released.
+            try:
+                await worker
+            except Exception:
+                pass
+            raise
 
 
 class FrameSampler:

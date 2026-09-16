@@ -1,8 +1,16 @@
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
 
-from youtubetext.media import FrameSampler, MediaDownloader, MediaPurpose, sampling_interval
+from youtubetext.media import (
+    FrameSampler,
+    MediaDownloader,
+    MediaDownloadError,
+    MediaPurpose,
+    sampling_interval,
+)
 from youtubetext.sources import YtDlpAuth
 
 
@@ -39,6 +47,79 @@ async def test_injected_download_runner_can_return_file(tmp_path):
     assert seen["options"]["extractor_retries"] == 3
     assert seen["options"]["noprogress"] is True
     assert seen["options"]["logger"] is not None
+    assert seen["options"]["continuedl"] is True
+    assert seen["options"]["nopart"] is False
+    assert seen["options"]["outtmpl"].endswith("/audio.%(ext)s")
+
+
+@pytest.mark.asyncio
+async def test_failed_download_can_continue_with_the_same_part_file(tmp_path):
+    directory = tmp_path / "work"
+    templates: list[str] = []
+
+    def fail_once(_url, options):
+        template = str(options["outtmpl"])
+        templates.append(template)
+        part = Path(template.replace("%(ext)s", "mp4") + ".part")
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_bytes(b"partial media")
+        raise RuntimeError("network interrupted")
+
+    with pytest.raises(MediaDownloadError, match="network interrupted"):
+        await MediaDownloader(fail_once).download(
+            "https://youtu.be/id",
+            directory,
+            MediaPurpose.ANALYSIS_VIDEO,
+        )
+
+    def continue_download(_url, options):
+        template = str(options["outtmpl"])
+        templates.append(template)
+        final = Path(template.replace("%(ext)s", "mp4"))
+        part = Path(f"{final}.part")
+        assert part.read_bytes() == b"partial media"
+        part.replace(final)
+        return {}
+
+    result = await MediaDownloader(continue_download).download(
+        "https://youtu.be/id",
+        directory,
+        MediaPurpose.ANALYSIS_VIDEO,
+    )
+
+    assert templates[0] == templates[1]
+    assert result == (directory / "analysis-video.mp4").resolve()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_waits_until_the_download_thread_stops(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+
+    def runner(_url, _options):
+        started.set()
+        release.wait(timeout=5)
+        stopped.set()
+        raise RuntimeError("stopped")
+
+    task = asyncio.create_task(
+        MediaDownloader(runner).download(
+            "https://youtu.be/id",
+            tmp_path / "work",
+            MediaPurpose.AUDIO,
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 2)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped.is_set()
 
 
 @pytest.mark.asyncio
