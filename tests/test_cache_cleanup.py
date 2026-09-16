@@ -188,16 +188,19 @@ def test_clear_incomplete_counts_task_when_deletion_fails(
 def test_clear_incomplete_does_not_create_missing_storage(tmp_path: Path) -> None:
     root = tmp_path / "missing-resume"
 
-    cleanup = LocalResumeStore(root).clear_incomplete()
-
-    assert cleanup == CacheCleanup(root=root)
-    assert cleanup.as_dict() == {
-        "root": str(root),
-        "removed_tasks": 0,
-        "removed_bytes": 0,
-        "active_tasks": 0,
-        "failed_tasks": 0,
-    }
+    if os.name == "nt":
+        with pytest.raises(NotImplementedError, match="not supported on Windows"):
+            LocalResumeStore(root).clear_incomplete()
+    else:
+        cleanup = LocalResumeStore(root).clear_incomplete()
+        assert cleanup == CacheCleanup(root=root)
+        assert cleanup.as_dict() == {
+            "root": str(root),
+            "removed_tasks": 0,
+            "removed_bytes": 0,
+            "active_tasks": 0,
+            "failed_tasks": 0,
+        }
     assert not root.exists()
 
 
