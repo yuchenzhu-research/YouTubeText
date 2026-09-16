@@ -151,6 +151,7 @@ def test_popen_options_are_platform_specific(monkeypatch) -> None:
     assert supervisor_module._popen_options() == {"start_new_session": True}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group probe")
 def test_process_group_probe_treats_permission_denied_as_existing(monkeypatch) -> None:
     def denied(_group: int, _signal: int) -> None:
         raise PermissionError("operation not permitted")
