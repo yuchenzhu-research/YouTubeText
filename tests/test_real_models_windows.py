@@ -1,11 +1,14 @@
 """Opt-in, offline Windows inference using locally generated test media.
 
 The manual workflow downloads the base ASR model before setting
-``HF_HUB_OFFLINE=1``. Normal push/PR tests skip this module.
+``HF_HUB_OFFLINE=1``. Normal push/PR tests skip model inference; the network
+guard regression test still runs without model weights.
 """
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import os
 import shutil
@@ -28,7 +31,7 @@ from youtubetext.ocr import RapidOCRBackend
 from youtubetext.sources import SourceResult
 
 
-pytestmark = pytest.mark.skipif(
+requires_windows_model = pytest.mark.skipif(
     sys.platform != "win32" or os.environ.get("YOUTUBETEXT_RUN_REAL_MODELS") != "1",
     reason="opt-in Windows real-model smoke test",
 )
@@ -36,13 +39,73 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def no_inference_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    def deny_network(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("real-model inference attempted to access the network")
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
 
-    monkeypatch.setattr(socket.socket, "connect", deny_network)
-    monkeypatch.setattr(socket.socket, "connect_ex", deny_network)
+    def is_local(sock: socket.socket, address: object) -> bool:
+        # Windows Proactor's wakeup socket uses numeric TCP loopback.
+        if sock.family == getattr(socket, "AF_UNIX", None):
+            return True
+        if sock.family not in {socket.AF_INET, socket.AF_INET6}:
+            return False
+        if not isinstance(address, tuple) or not address:
+            return False
+        host = address[0]
+        if not isinstance(host, str):
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        if ip.is_loopback:
+            return True
+        return isinstance(ip, ipaddress.IPv6Address) and bool(
+            ip.ipv4_mapped and ip.ipv4_mapped.is_loopback
+        )
+
+    def connect_local_only(sock: socket.socket, address: object) -> None:
+        if not is_local(sock, address):
+            raise AssertionError("real-model inference attempted to access the network")
+        return original_connect(sock, address)
+
+    def connect_ex_local_only(sock: socket.socket, address: object) -> int:
+        if not is_local(sock, address):
+            raise AssertionError("real-model inference attempted to access the network")
+        return original_connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect_local_only)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex_local_only)
 
 
+def test_network_guard_allows_local_event_loop_sockets_only() -> None:
+    asyncio.run(asyncio.sleep(0))
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(2)
+        listener.settimeout(2)
+        address = listener.getsockname()
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+            client.settimeout(2)
+            client.connect(address)
+            accepted, _ = listener.accept()
+            accepted.close()
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+            client.settimeout(2)
+            assert client.connect_ex(address) == 0
+            accepted, _ = listener.accept()
+            accepted.close()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+        with pytest.raises(AssertionError, match="access the network"):
+            client.connect(("198.51.100.1", 443))
+        with pytest.raises(AssertionError, match="access the network"):
+            client.connect_ex(("198.51.100.1", 443))
+
+
+@requires_windows_model
 def test_rapidocr_reads_locally_rendered_text(tmp_path: Path) -> None:
     from PIL import Image, ImageDraw, ImageFont
 
@@ -94,6 +157,7 @@ def generated_speech(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return audio_path
 
 
+@requires_windows_model
 def test_faster_whisper_transcribes_locally_synthesized_speech(
     generated_speech: Path,
 ) -> None:
@@ -110,6 +174,7 @@ def test_faster_whisper_transcribes_locally_synthesized_speech(
     assert "brown" in text and "fox" in text, text
 
 
+@requires_windows_model
 def test_windows_cli_exports_offline_speech_with_real_whisper(
     generated_speech: Path,
     tmp_path: Path,
