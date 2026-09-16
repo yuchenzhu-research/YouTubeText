@@ -1,62 +1,73 @@
 # YouTubeText
 
-YouTubeText 是一款面向 Apple Silicon Mac 的终端工具，可将 YouTube 和 Bilibili
-视频转换为带时间轴的 Markdown/TXT 全文，以及无时间轴的纯净 Markdown 全文。
+English | [繁體中文](docs/README.zh-Hant.md) | [简体中文](docs/README.zh-Hans.md) | [Español](docs/README.es.md) | [日本語](docs/README.ja.md)
 
-它只负责提取完整文字，不生成摘要，不分析观点，也不需要 Ollama、LLM 或云端 AI API。
+YouTubeText is a terminal tool for Apple Silicon Macs that turns YouTube and
+Bilibili videos into clean, timestamped transcripts. It exports a timestamped
+Markdown file, a clean Markdown file without timestamps, a text file, and
+structured metadata.
 
-## 功能
+YouTubeText extracts complete text only. It does not summarize videos, analyze
+arguments, or require an LLM, Ollama, or a cloud AI API.
 
-- 同时提交一个或多个 URL，并按本机内存自动安排并行任务。
-- 识别 YouTube、Bilibili 来源并读取标题、作者、时长等元数据。
-- 优先下载平台提供的人工字幕或自动字幕。
-- 无字幕轨时，使用 macOS Apple Vision 识别画面中的硬字幕。
-- 没有可用硬字幕时，使用本地 MLX Whisper 识别语音。
-- 同时输出带时间轴的 `transcript.md` 和无时间轴的 `transcript-clean.md`。
-- 另外输出带时间轴的 `transcript.txt` 和任务信息 `metadata.json`。
-- 每个 URL 独立成功或失败，一个任务出错不会取消其他任务。
-- 按 `Ctrl-C` 会终止本次运行；普通任务会清理临时媒体，启用 `--resume` 的任务会保留可续用的媒体。
+## Features
 
-## 处理流程
+- Submit one URL or a queue of URLs in the same command.
+- Detect YouTube and Bilibili sources and read their metadata.
+- Prefer manual or automatic platform captions when available.
+- Read burned-in subtitles with Apple Vision when no platform track is usable.
+- Fall back to local MLX Whisper speech recognition when OCR is not usable.
+- Export both timestamped and clean, no-timestamp Markdown transcripts.
+- Automatically choose safe URL concurrency from the Mac's physical memory.
+- Reuse completed transcripts, resume interrupted media downloads, and reuse
+  completed OCR batches.
+- Inspect a URL with `--plan` before downloading any subtitle or media file.
+- Isolate failures: one bad URL does not cancel the rest of the queue.
+
+## Pipeline
 
 ```text
-URL 队列
-  └─ 识别平台并读取元数据
-       ├─ 有字幕轨 ──────────────→ 清洗字幕 ───────────────→ 导出
-       └─ 无字幕轨 → 可兼容的本地字幕缓存 ───────────────→ 导出
-                    └─ 未命中 → 下载临时低清视频 → Apple Vision OCR
-                                                         ├─ 文字质量合格 → 导出
-                                                         └─ 不合格 → MLX Whisper → 导出
+URL queue
+  └─ Detect platform and read metadata
+       ├─ Usable platform caption ─────────────→ Clean cues ─────────→ Export
+       └─ No usable caption
+            ├─ --resume cache hit ─────────────────────────────→ Export
+            └─ cache miss or resume off → analysis video → Vision OCR
+                                                            ├─ usable → Export
+                                                            └─ unusable → Whisper → Export
 ```
 
-平台字幕路径不会下载视频。OCR 和 Whisper 所需的媒体只保存在系统缓存中的任务目录。
-普通任务结束后会自动删除；启用 `--resume` 时，成功后删除，失败或中断时保留以便续跑。
+The platform-caption path never downloads the video. Caption files are small,
+temporary inputs. Normal runs keep OCR and Whisper media in a supervised,
+per-run temporary directory and remove it when the run ends. With `--resume`,
+media is stored under the user cache's `tasks/` directory, retained after an
+interruption, and removed after success.
 
-## 系统要求
+## Requirements
 
-- Apple Silicon Mac（arm64）
-- macOS 13 或更高版本
+- Apple Silicon Mac (`arm64`)
+- macOS 13 or later
 - Python 3.11–3.14
 - FFmpeg
-- Xcode Command Line Tools（用于编译 Apple Vision OCR 辅助程序）
-- 推荐安装 `uv`
+- Xcode Command Line Tools, used to build the Apple Vision OCR helper
+- `uv` is recommended
 
-缺少 FFmpeg 时可运行：
+Install FFmpeg with Homebrew if it is missing:
 
 ```bash
 brew install ffmpeg
 ```
 
-缺少 Apple Command Line Tools 时可运行：
+Install Apple's command-line tools if they are missing:
 
 ```bash
 xcode-select --install
 ```
 
-## 安装
+## Installation
 
-当前唯一正式支持的安装方式是克隆 Git 仓库后运行 `scripts/install.sh`；项目尚未提供
-PyPI 包或 wheel 安装包。
+The supported installation method is currently a source checkout. YouTubeText
+is not yet published as a PyPI package or prebuilt wheel.
 
 ```bash
 git clone https://github.com/yuchenzhu-research/YouTubeText.git
@@ -64,27 +75,30 @@ cd YouTubeText
 ./scripts/install.sh
 ```
 
-已经配置 GitHub SSH Key 时，也可以使用
-`git@github.com:yuchenzhu-research/YouTubeText.git`。
+If GitHub SSH is already configured:
 
-安装脚本会创建仓库内的 `.venv`、安装 Python 依赖并编译 Apple Vision OCR
-辅助程序。它不会使用 `sudo`，也不会自动安装 Homebrew。
+```bash
+git clone git@github.com:yuchenzhu-research/YouTubeText.git
+```
 
-安装后可先检查本机环境：
+The installer creates `.venv`, installs Python dependencies, and builds the
+Apple Vision OCR helper. It does not use `sudo` or install Homebrew automatically.
+
+Check the local environment after installation:
 
 ```bash
 ./.venv/bin/youtubetext doctor
 ```
 
-## 使用
+## Quick start
 
-处理一个视频：
+Process one video:
 
 ```bash
 ./.venv/bin/youtubetext "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-处理多个 URL，并允许两个 URL 任务并行：
+Queue YouTube and Bilibili URLs with two concurrent URL tasks:
 
 ```bash
 ./.venv/bin/youtubetext \
@@ -93,7 +107,7 @@ cd YouTubeText
   --jobs 2
 ```
 
-指定输出目录和繁体中文：
+Choose an output directory and Traditional Chinese recognition:
 
 ```bash
 ./.venv/bin/youtubetext URL \
@@ -101,102 +115,144 @@ cd YouTubeText
   --language zh-Hant
 ```
 
-需要机器可读结果时：
+Return machine-readable results:
 
 ```bash
 ./.venv/bin/youtubetext URL --json
 ```
 
-复用此前已经完整识别的本地字幕，避免再次运行 OCR 或 Whisper：
+Show every option:
+
+```bash
+./.venv/bin/youtubetext --help
+```
+
+## Preflight plan
+
+Use `--plan` to inspect what a fresh run would do before any subtitle or media
+file is downloaded:
+
+```bash
+./.venv/bin/youtubetext URL --plan
+./.venv/bin/youtubetext URL_1 URL_2 --plan --json
+```
+
+Preflight makes a network metadata request for each URL and reports:
+
+- source metadata and duration;
+- the best caption track advertised by the platform;
+- the expected caption, OCR, and Whisper route;
+- whether subtitle or media downloads are `required`, `conditional`, or `none`;
+- the primary media type and any audio fallback.
+
+An advertised track is marked `advertised-unvalidated`: preflight does not
+download or parse it, so availability is not yet guaranteed. Preflight does not
+download subtitles, audio, video, or Whisper models; does not sample frames or
+run OCR/Whisper; does not create an output directory; and does not read or write
+resume state.
+
+Plans use the cache assumption `no-resume-reuse`. A later execution with
+`--resume` may therefore skip work shown as required. `--plan` and `--resume`
+cannot be used together. Multiple URLs are inspected concurrently, results stay
+in input order, and one metadata failure does not hide the other plans.
+
+## Resume and cache
+
+Enable reusable local state explicitly:
 
 ```bash
 ./.venv/bin/youtubetext URL --resume
 ```
 
-`--resume` 默认关闭。启用后仍会重新查询平台字幕；如果平台后来提供了字幕轨，会优先
-采用平台字幕。完整生成的结构化字幕会写入用户缓存；下载中断留下的 `.part` 文件可在
-下次运行时由 yt-dlp 接着下载，已经下载完成的媒体也会直接复用。完整字幕保存成功后，
-任务媒体会自动删除。Apple Vision OCR 每完成一批就保存不含图片路径的原始识别结果，
-中断后只需重做未完成批次。当前版本还不能从 Whisper 推理的中间位置继续。
+YouTubeText still checks the platform for a newly available caption first. On a
+cache miss, yt-dlp can continue an interrupted `.part` download; a completed
+media file is reused directly; and Apple Vision saves raw OCR observations after
+each successfully recognized batch of up to 32 frames. A batch containing frame
+errors is not checkpointed and is retried on the next run. Sampled images are
+deleted batch by batch after recognition; when a checkpoint is written, it is
+saved before deletion. Whisper inference cannot yet resume from the middle.
 
-完整字幕保存在 `~/Library/Caches/YouTubeText/transcripts/`，未完成任务保存在同级的
-`tasks/`，不会自动过期；目录和文件分别限制为当前用户可读的 `0700`/`0600` 权限。
-同一个任务同时启动多次时，只会有一个进程执行识别，其余进程等待后复用结果。匿名任务
-与不同内容的 Cookie 文件使用相互隔离的缓存分区。因为仅凭浏览器名称无法可靠识别
-当前登录账号，出于会员内容隐私考虑，
-`--resume` 暂时不能和 `--cookies-from-browser` 同时使用；需要登录并恢复时请使用
-`--cookies-file`。不传 `--resume` 即可强制重新识别。
+Completed structured transcripts are stored under:
 
-查看完整字幕和未完成任务占用的空间：
+```text
+~/Library/Caches/YouTubeText/transcripts/
+```
+
+Incomplete tasks are stored in the sibling `tasks/` directory. Directories and
+files are restricted to the current user with `0700` and `0600` permissions. Two
+processes requesting the same task use one lock: one performs the work and the
+other waits to reuse its result. Anonymous requests and different cookie files
+use separate cache scopes.
+
+Inspect cache usage without modifying it:
 
 ```bash
 ./.venv/bin/youtubetext cache
 ./.venv/bin/youtubetext cache --json
 ```
 
-`cache` 和 `cache status` 都是只读操作。只删除失败或中断任务留下的媒体与 OCR 检查点，
-同时保留全部完整字幕：
+Remove only failed or interrupted task media and OCR checkpoints while retaining
+all completed transcripts:
 
 ```bash
 ./.venv/bin/youtubetext cache clear-incomplete
 ```
 
-清理时正在运行并持锁的任务会被跳过；已删除的临时媒体无法恢复，但可从原 URL 重新下载。
-要手动删除包括完整字幕在内的全部缓存，可在 Finder 中使用“前往文件夹”打开
-`~/Library/Caches/YouTubeText/`。
+Active, locked tasks are skipped. Removed temporary media cannot be recovered,
+but it can be downloaded again from the original URL. To remove everything,
+including completed transcripts, delete `~/Library/Caches/YouTubeText/` manually.
 
-需要登录才能访问的视频，可以直接使用本机浏览器的登录状态：
+## Authentication and cookies
+
+Use the login state from a local browser for restricted videos:
 
 ```bash
 ./.venv/bin/youtubetext URL --cookies-from-browser safari
 ```
 
-也可以传入 Netscape 格式的 Cookie 文件：
+Or provide a Netscape-format cookie file:
 
 ```bash
 ./.venv/bin/youtubetext URL --cookies-file /path/to/cookies.txt
 ```
 
-两种方式不能同时使用。YouTubeText 不会把 Cookie 内容写入磁盘缓存、输出目录、
-`metadata.json` 或 JSON 结果；Cookie 文件会以每次调用独立的内存副本交给 yt-dlp，
-原文件不会被修改。Safari 读取失败时，可能需要在 macOS“隐私与安全性”设置中给当前
-终端完整磁盘访问权限。
+The two options are mutually exclusive. Cookie contents are never written to
+the output directory, metadata, JSON results, or resume cache. Cookie files are
+copied into memory for each yt-dlp call; the original file is not modified.
 
-查看全部选项：
+Because a browser name cannot reliably identify the active account,
+`--cookies-from-browser` cannot be combined with `--resume`. Use
+`--cookies-file` when authentication and resume are both required. Safari may
+need Full Disk Access for the terminal in macOS Privacy & Security settings.
 
-```bash
-./.venv/bin/youtubetext --help
-```
+## Modes
 
-## 模式
-
-| 模式 | 行为 |
+| Mode | Behavior |
 | --- | --- |
-| `auto` | 平台字幕优先；没有字幕时尝试 OCR；OCR 不可用时回退 Whisper。 |
-| `captions` | 只接受平台字幕；没有字幕轨就报错。 |
-| `ocr` | 只识别画面硬字幕；没有有效字幕就报错。 |
-| `whisper` | 跳过字幕下载和 OCR，直接进行本地语音识别。 |
-| `hybrid` | 同时使用 OCR 与 Whisper；可见字幕优先，语音结果补充空白时间段。 |
+| `auto` | Prefer platform captions, then OCR, then Whisper. |
+| `captions` | Require a platform caption track; fail when none is available. |
+| `ocr` | Ignore platform captions and read burned-in subtitles only. |
+| `whisper` | Skip captions and OCR; run local speech recognition directly. |
+| `hybrid` | Run OCR and Whisper; visible captions take priority when their time ranges overlap. |
 
-例如强制使用 OCR：
+Force OCR, for example:
 
 ```bash
 ./.venv/bin/youtubetext URL --mode ocr --language zh-Hant
 ```
 
-## 语言
+## Languages
 
-`--language` 支持：
+`--language` supports:
 
 ```text
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
 
-其中 `en`、`zh-Hans`、`zh-Hant` 和 `es` 分别对应英语、简体中文、繁体中文和
-西班牙语。使用 `auto` 时，Apple Vision 会根据标题优先排列识别语言，并从最终 OCR
-文字判断简体或繁体；Whisper 则使用自己的语音语言检测。
+Apple Vision uses title and author context to prioritize recognition languages
+when `auto` is selected. Whisper performs its own spoken-language detection.
 
-平台字幕可以单独设置多个优先语言：
+Set an ordered list of preferred platform-caption languages separately:
 
 ```bash
 ./.venv/bin/youtubetext URL \
@@ -205,90 +261,105 @@ auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
   --caption-language en
 ```
 
-## 输出
+## Output files
 
-默认写入当前目录的 `YouTubeText-output/`：
+The default output root is `YouTubeText-output/` in the current directory:
 
 ```text
 YouTubeText-output/
-  VIDEO_ID-视频标题/
+  VIDEO_ID-video-title/
     transcript.md
     transcript-clean.md
     transcript.txt
     metadata.json
 ```
 
-`transcript.md` 和 `transcript.txt` 包含时间戳与完整文字；`transcript-clean.md`
-保留 Markdown 标题、视频信息和完整正文，但不包含逐段时间轴。JSON 保存来源 URL、
-平台、作者、时长、语言、提取方式、片段数量和警告。
+- `transcript.md`: complete Markdown transcript with per-segment timestamps.
+- `transcript-clean.md`: complete Markdown transcript without timeline markers.
+- `transcript.txt`: plain text with timestamps.
+- `metadata.json`: source, language, extraction method, segment count, and warnings.
 
-## 并行与资源控制
+## Concurrency and resource control
 
-`--jobs 0` 是默认设置，会根据物理内存自动选择同时处理的 URL 数量：
+`--jobs 0` is the default and derives URL concurrency from physical memory:
 
-| 内存 | 自动并行任务数 |
+| Physical memory | Automatic URL jobs |
 | --- | ---: |
-| 少于 12 GiB | 1 |
+| Less than 12 GiB | 1 |
 | 12–23 GiB | 2 |
 | 24–39 GiB | 3 |
-| 40 GiB 及以上 | 4 |
+| 40 GiB or more | 4 |
 
-也可以通过 `--jobs 1` 到 `--jobs 8` 手动设置。网络下载最多同时进行 4 个，Apple
-Vision OCR 最多同时进行 2 个，Whisper 固定串行运行，以避免统一内存和 Metal 资源突增。
+Override it with `--jobs 1` through `--jobs 8`. Network work uses at most four
+slots, Apple Vision OCR uses at most two, and Whisper is serialized to avoid
+unified-memory and Metal contention.
 
-OCR 默认每秒抽取一帧，长视频最多保留 2,400 帧；每 32 帧调用一次 Vision，并在
-识别结果安全写入检查点后立即删除该批图片。检查点只保存帧内容摘要、时间戳和原始
-OCR 文字框，不保存帧图片或其临时路径。
+OCR normally samples one frame per second and caps long videos at 2,400 frames.
+Vision receives batches of up to 32 cropped frames, and those images are always
+removed batch by batch after recognition. With `--resume`, a successfully
+recognized batch is checkpointed before deletion; a batch containing frame errors
+is not checkpointed and will be retried on the next run. Checkpoints store
+timestamps, content hashes, and raw text boxes, never frame images or temporary
+paths.
 
-## Whisper 模型
+## Whisper models
 
-Whisper 只在没有可用字幕轨和硬字幕，或明确选择 `whisper` / `hybrid` 模式时运行。
-模型首次需要时才下载，并会复用 Hugging Face 已有缓存。
+Whisper runs only when captions and burned-in subtitles are unusable, or when
+`whisper` / `hybrid` mode is selected. A model is downloaded on first use and
+then reused from a local model cache. Compatible weights already present in the
+standard Hugging Face cache are reused as well.
 
-| 模型 | 下载体积（约） | 运行内存（约） |
+| Model | Approximate download | Approximate runtime memory |
 | --- | ---: | ---: |
 | `base` | 144 MB | 1 GiB |
 | `small` | 481 MB | 2 GiB |
 | `large-v3-turbo` | 1.61 GB | 6 GiB |
 
-自动选择在低内存 Mac 上使用 `small`，16 GiB 及以上使用
-`large-v3-turbo`。可用 `--whisper-model` 手动覆盖。
+Automatic selection uses `small` on lower-memory Macs and `large-v3-turbo` on
+Macs with at least 16 GiB. Override it with `--whisper-model`.
 
-## 开发
+## Development and architecture
+
+Run the complete development workflow:
 
 ```bash
 ./scripts/dev.sh
 ```
 
-该脚本会同步开发依赖、重新编译原生 OCR 辅助程序并运行完整测试。也可以把 pytest
-参数直接传给它：
+Pass pytest arguments through the script when needed:
 
 ```bash
 ./scripts/dev.sh tests/test_acquisition.py -q
 ```
 
-主要模块：
+Primary modules:
 
-- `sources/`：YouTube、Bilibili 元数据与平台字幕。
-- `media.py`：可续传媒体下载与受限抽帧。
-- `resume.py`：完整字幕复用、任务锁和未完成媒体生命周期。
-- `ocr/`：Apple Vision 调用和硬字幕合并。
-- `asr/`：MLX Whisper、模型选择与缓存复用。
-- `acquisition.py`：字幕、OCR、Whisper 之间的路由策略。
-- `runtime.py`：本机资源检测与多 URL 调度。
-- `export.py`：两种 Markdown、TXT、JSON 的分组原子写入。
-- `cli.py`：终端入口。
+- `sources/`: YouTube/Bilibili metadata and platform captions.
+- `planning.py`: read-only preflight routes and download requirements.
+- `media.py`: resumable media downloads and bounded frame sampling.
+- `resume.py`: transcript reuse, task locks, OCR checkpoints, and task cleanup.
+- `ocr/`: Apple Vision invocation and burned-in caption assembly.
+- `asr/`: MLX Whisper, model selection, and model-cache reuse.
+- `acquisition.py`: the authoritative captions/OCR/Whisper routing policy.
+- `runtime.py`: Mac resource detection and ordered multi-URL scheduling.
+- `export.py`: grouped atomic writes for Markdown, TXT, and JSON outputs.
+- `cli.py`: terminal interface.
 
-## 当前限制
+## Current limitations
 
-- 目前只支持 Apple Silicon macOS。
-- 平台访问能力依赖 yt-dlp；受地区、账号、Cookies 或平台变更影响的视频可能失败。
-- Apple Vision OCR 针对视频下方的硬字幕优化；其他位置或高度装饰化的文字可能需要
-  手动选择 Whisper。
-- Bilibili 元数据和临时媒体下载已实时验证，字幕兼容仍需更多公开视频验证。
+- Only Apple Silicon macOS is supported.
+- Platform access depends on yt-dlp and may be affected by region, account,
+  cookies, or platform changes.
+- Apple Vision OCR is optimized for subtitles near the bottom of the frame.
+  Other layouts or heavily stylized text may require Whisper mode.
+- Bilibili metadata and temporary media paths have been exercised live; caption
+  compatibility still needs broader testing across public videos.
+- Whisper cannot resume from an intermediate inference position.
 
-## 参考实现
+## Reference and notices
 
-MediaBrief 原始仓库保存在本机 `reference/mediabrief/`，仅用于架构和行为对照。
-`reference/` 已被 Git 忽略，不会提交到 YouTubeText 仓库。第三方许可信息见
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+The design was informed by [MediaBrief](https://github.com/EvilIrving/mediabrief).
+A local reference checkout may be kept under `reference/mediabrief/`; the entire
+`reference/` directory is intentionally ignored by Git and is not part of this
+repository. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for third-party
+software notices.
