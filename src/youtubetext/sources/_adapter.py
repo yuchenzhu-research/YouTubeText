@@ -74,7 +74,7 @@ def run_with_platform_retries(
             try:
                 delay = next(delays)
             except StopIteration:
-                raise
+                raise exc
             sleep(delay)
 
 

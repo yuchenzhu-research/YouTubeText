@@ -141,6 +141,19 @@ def test_bilibili_http_412_is_retried_with_bounded_backoff():
     assert delays == [0.5, 1.5]
 
 
+def test_exhausted_bilibili_412_retries_report_original_error():
+    runner = FakeRunner(failure=RuntimeError("HTTP Error 412: Precondition Failed"))
+    delays: list[float] = []
+
+    with pytest.raises(SourceFetchError, match="HTTP Error 412"):
+        SourceClient(runner, sleeper=delays.append).fetch(
+            "https://www.bilibili.com/video/BV1abc"
+        )
+
+    assert len(runner.calls) == 4
+    assert delays == [0.5, 1.5, 3.0]
+
+
 def test_bilibili_retries_receive_fresh_in_memory_cookie_files(tmp_path):
     cookie_file = tmp_path / "cookies.txt"
     cookie_file.write_text("cookie data", encoding="utf-8")
