@@ -1,0 +1,37 @@
+name: Real model smoke (manual)
+
+# Model weights are deliberately not downloaded for push or pull_request runs.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-models:
+    name: Windows · local OCR and ASR
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      YOUTUBETEXT_RUN_REAL_MODELS: "1"
+      YOUTUBETEXT_REAL_MODEL_CACHE: ${{ runner.temp }}/youtubetext-model-smoke
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Pre-fetch the base CTranslate2 Whisper model
+        run: >-
+          uv run --no-sync python -c
+          "import os; from pathlib import Path; from faster_whisper import download_model;
+          download_model('base', cache_dir=str(Path(os.environ['YOUTUBETEXT_REAL_MODEL_CACHE']) / 'faster'))"
+
+      - name: Infer from locally generated media without Hub access
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: uv run --no-sync pytest -vv tests/test_real_models_windows.py
