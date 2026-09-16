@@ -58,3 +58,16 @@ def test_localized_readme_links_resolve() -> None:
             assert (path.parent / local_target).is_file(), (
                 f"{path.name} links to missing file {target}"
             )
+
+
+def test_language_option_is_not_described_as_translation_or_script_conversion() -> None:
+    expected = (
+        "does not translate or convert between Simplified and Traditional Chinese",
+        "不會翻譯或進行簡繁轉換",
+        "不会翻译或进行简繁转换",
+        "no traduce ni convierte entre chino simplificado y tradicional",
+        "翻訳や簡体字・繁体字の変換は行いません",
+    )
+    for path, phrase in zip(README_FILES, expected):
+        markdown = " ".join(path.read_text(encoding="utf-8").split())
+        assert phrase in markdown, f"{path.name} is missing the language caveat"

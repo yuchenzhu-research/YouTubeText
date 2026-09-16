@@ -119,7 +119,7 @@ YouTubeとBilibiliのURLを、2つのURLタスクで並行処理するキュー�
   --jobs 2
 ```
 
-出力ディレクトリと繁体字中国語認識を選択します。
+出力ディレクトリを選び、元の文字が繁体字中国語であることをヒントとして指定します。
 
 ```bash
 ./.venv/bin/youtubetext URL \
@@ -283,6 +283,12 @@ Safariの例はmacOS専用です。Windowsでは、インストール済みでyt
 ```text
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
+
+`--language`は元の音声または画面上の文字の言語を示すヒントで、出力言語の
+指定ではありません。プラットフォーム字幕の優先設定、対応するOCR、Whisperの
+音声言語の選択に使われます。Whisperでは`zh-Hans`と`zh-Hant`がどちらも
+`zh`として渡されるため、`zh-Hant`を選んでも結果の言語が`zh`となり、
+簡体字で出力される場合があります。このツールは翻訳や簡体字・繁体字の変換は行いません。
 
 macOSで`auto`を選択すると、Apple Visionはタイトルと投稿者の文脈を使って
 認識言語を優先します。WindowsのRapidOCRに既定で含まれるPP-OCRv6 smallは、

@@ -75,7 +75,7 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     type=click.Choice(LANGUAGES, case_sensitive=False),
     default="auto",
     show_default=True,
-    help="Spoken or visible text language.",
+    help="Source language hint; not translation or script conversion.",
 )
 @click.option(
     "--caption-language",

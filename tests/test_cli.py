@@ -150,6 +150,8 @@ def test_help_and_version_do_not_require_a_url():
     assert "--resume" in help_result.output
     assert "--plan" in help_result.output
     assert "youtubetext cache" in help_result.output
+    normalized_help = " ".join(help_result.output.split())
+    assert "Source language hint; not translation or script conversion." in normalized_help
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
     assert "0.1.0" in version_result.output

@@ -116,7 +116,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
   --jobs 2
 ```
 
-選擇輸出目錄與繁體中文辨識：
+選擇輸出目錄，並提示來源文字可能是繁體中文：
 
 ```bash
 ./.venv/bin/youtubetext URL \
@@ -266,6 +266,11 @@ Safari 範例僅適用於 macOS；在 Windows 上請選擇 yt-dlp 支援且已�
 ```text
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
+
+`--language` 是來源語音或畫面文字的語言提示，不是指定輸出語言。它會影響
+平台字幕偏好、可用 OCR 的辨識語言，以及 Whisper 的語音語言選擇。使用
+Whisper 時，`zh-Hans` 與 `zh-Hant` 都會傳成 `zh`；結果可能標示為
+`zh`，即使選了 `zh-Hant` 也可能輸出簡體字。本工具不會翻譯或進行簡繁轉換。
 
 在 macOS 選擇 `auto` 時，Apple Vision 會利用標題和作者內容設定辨識語言的
 優先順序。Windows RapidOCR 預設的 PP-OCRv6 small 模型可辨識 `en`、

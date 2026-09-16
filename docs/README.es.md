@@ -121,7 +121,7 @@ Pon en cola URLs de YouTube y Bilibili con dos tareas de URL simultáneas:
   --jobs 2
 ```
 
-Elige un directorio de salida y reconocimiento en chino tradicional:
+Elige un directorio de salida e indica que el texto de origen puede estar en chino tradicional:
 
 ```bash
 ./.venv/bin/youtubetext URL \
@@ -290,6 +290,13 @@ Por ejemplo, fuerza OCR:
 ```text
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
+
+`--language` es una pista sobre el idioma hablado o el texto visible de origen,
+no una selección del idioma de salida. Orienta la preferencia por subtítulos de
+la plataforma, el OCR cuando está disponible y el idioma de voz de Whisper.
+Whisper reduce tanto `zh-Hans` como `zh-Hant` a `zh`: el resultado puede indicar
+`zh` y contener caracteres simplificados incluso si se eligió `zh-Hant`. La
+herramienta no traduce ni convierte entre chino simplificado y tradicional.
 
 En macOS, Apple Vision usa el contexto del título y del autor para priorizar
 los idiomas de reconocimiento cuando se selecciona `auto`. En Windows, el

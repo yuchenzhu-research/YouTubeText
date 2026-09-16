@@ -116,7 +116,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
   --jobs 2
 ```
 
-选择输出目录和繁体中文识别：
+选择输出目录，并提示原始文字可能是繁体中文：
 
 ```bash
 ./.venv/bin/youtubetext URL \
@@ -266,6 +266,11 @@ yt-dlp 支持且已安装的浏览器。
 ```text
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
+
+`--language` 是原始语音或画面文字的语言提示，不是指定输出语言。它会影响
+平台字幕偏好、可用 OCR 的识别语言，以及 Whisper 的语音语言选择。使用
+Whisper 时，`zh-Hans` 和 `zh-Hant` 都会传成 `zh`；结果可能标记为
+`zh`，即使选择了 `zh-Hant` 也可能输出简体字。本工具不会翻译或进行简繁转换。
 
 在 macOS 选择 `auto` 时，Apple Vision 会利用标题和作者上下文设置识别语言的
 优先顺序。Windows RapidOCR 默认的 PP-OCRv6 small 模型可识别 `en`、

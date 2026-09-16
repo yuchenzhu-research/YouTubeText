@@ -122,7 +122,7 @@ Queue YouTube and Bilibili URLs with two concurrent URL tasks:
   --jobs 2
 ```
 
-Choose an output directory and Traditional Chinese recognition:
+Choose an output directory and hint that the source text is Traditional Chinese:
 
 ```bash
 ./.venv/bin/youtubetext URL \
@@ -284,6 +284,13 @@ Force OCR, for example:
 ```text
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
+
+`--language` hints at the source speech or visible-text language; it does not
+select an output language. It guides platform-caption preference, OCR where
+available, and Whisper's speech-language choice. Whisper passes both `zh-Hans`
+and `zh-Hant` as `zh`, so the result may report `zh` and contain Simplified
+Chinese even when `zh-Hant` was selected. It does not translate or convert
+between Simplified and Traditional Chinese.
 
 On macOS, Apple Vision uses title and author context to prioritize recognition
 languages when `auto` is selected. On Windows, RapidOCR's default PP-OCRv6 small
