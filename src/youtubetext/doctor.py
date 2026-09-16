@@ -108,6 +108,7 @@ class Doctor:
         system: Callable[[], str] | None = None,
         machine: Callable[[], str] | None = None,
         which: Callable[[str], str | None] | None = None,
+        ffmpeg_probe: Callable[[Path], tuple[bool, str]] | None = None,
         vision_binary: Callable[[], Path | None] | None = None,
         vision_probe: Callable[[Path], tuple[bool, str]] | None = None,
         import_module: Callable[[str], ModuleType | Any] | None = None,
@@ -116,6 +117,7 @@ class Doctor:
         self._system = system or platform.system
         self._machine = machine or platform.machine
         self._which = which or shutil.which
+        self._ffmpeg_probe = ffmpeg_probe or _probe_ffmpeg_binary
         self._vision_binary = vision_binary or find_vision_ocr_binary
         self._vision_probe = vision_probe or _probe_vision_binary
         self._import_module = import_module or importlib.import_module
@@ -143,16 +145,7 @@ class Doctor:
                 )
             ]
 
-        ffmpeg = _path_from_probe(self._which("ffmpeg"))
-        checks.append(
-            DiagnosticCheck(
-                key="ffmpeg",
-                ok=ffmpeg is not None,
-                required=True,
-                detail="ffmpeg is available" if ffmpeg else "ffmpeg was not found on PATH",
-                path=ffmpeg,
-            )
-        )
+        checks.append(self._check_ffmpeg())
 
         if system.casefold() == "darwin":
             checks.extend(self._mac_backend_checks())
@@ -178,6 +171,28 @@ class Doctor:
         else:
             models = ()
         return DoctorReport(checks=tuple(checks), whisper_models=models)
+
+    def _check_ffmpeg(self) -> DiagnosticCheck:
+        ffmpeg = _path_from_probe(self._which("ffmpeg"))
+        if ffmpeg is None:
+            return DiagnosticCheck(
+                key="ffmpeg",
+                ok=False,
+                required=True,
+                detail="ffmpeg was not found on PATH",
+            )
+        try:
+            ok, detail = self._ffmpeg_probe(ffmpeg)
+        except Exception as exc:
+            ok = False
+            detail = f"FFmpeg could not be checked: {_one_line_error(exc)}"
+        return DiagnosticCheck(
+            key="ffmpeg",
+            ok=ok,
+            required=True,
+            detail=detail,
+            path=ffmpeg,
+        )
 
     @staticmethod
     def _mac_host_checks(host: HostProfile) -> list[DiagnosticCheck]:
@@ -451,6 +466,36 @@ def _available_detail(label: str, module: ModuleType | Any) -> str:
     except Exception:
         version = ""
     return f"{label} is available" + (f" ({version})" if version else "")
+
+
+def _probe_ffmpeg_binary(binary: Path) -> tuple[bool, str]:
+    try:
+        completed = subprocess.run(
+            [str(binary), "-version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"FFmpeg could not run: {_one_line_error(exc)}"
+    if completed.returncode != 0:
+        output = " ".join((completed.stderr or completed.stdout or "").split())[:200]
+        detail = f"FFmpeg version check exited with code {completed.returncode}"
+        return False, f"{detail}: {output}" if output else detail
+    output = "\n".join((completed.stdout or "", completed.stderr or ""))
+    version_line = next(
+        (
+            line.strip()
+            for line in output.splitlines()
+            if line.strip().casefold().startswith("ffmpeg version ")
+        ),
+        None,
+    )
+    if version_line is None:
+        return False, "FFmpeg version check returned no FFmpeg version banner"
+    return True, f"FFmpeg is available ({version_line[:160]})"
 
 
 def _probe_vision_binary(binary: Path) -> tuple[bool, str]:

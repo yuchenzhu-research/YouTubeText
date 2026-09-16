@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import youtubetext.doctor as doctor_module
 from youtubetext.asr.models import MODELS, WhisperModel
 from youtubetext.doctor import Doctor
 
 
 def working_vision(_path: Path) -> tuple[bool, str]:
     return True, "Vision protocol is ready"
+
+
+def working_ffmpeg(_path: Path) -> tuple[bool, str]:
+    return True, "FFmpeg passed its version check"
 
 
 class FakeCache:
@@ -86,6 +93,7 @@ def windows_doctor(
         system=lambda: "Windows",
         machine=lambda: machine,
         which=lambda command: "C:/ffmpeg/bin/ffmpeg.exe" if command == "ffmpeg" else None,
+        ffmpeg_probe=working_ffmpeg,
         vision_binary=mac_probe,
         vision_probe=mac_probe,
         import_module=import_module or (lambda name: available[name]),
@@ -99,6 +107,7 @@ def test_ready_report_contains_paths_versions_and_cached_models(tmp_path: Path) 
         system=lambda: "Darwin",
         machine=lambda: "arm64",
         which=lambda command: "/opt/homebrew/bin/ffmpeg" if command == "ffmpeg" else None,
+        ffmpeg_probe=working_ffmpeg,
         vision_binary=lambda: Path("/usr/local/bin/youtubetext-vision-ocr"),
         vision_probe=working_vision,
         import_module=lambda name: SimpleNamespace(__version__="0.4.3"),
@@ -120,6 +129,96 @@ def test_ready_report_contains_paths_versions_and_cached_models(tmp_path: Path) 
     assert [item.name for item in report.whisper_models] == list(MODELS)
     assert [item.name for item in report.whisper_models if item.cached] == ["small"]
     assert not cache.ensure_called
+
+
+def test_executable_without_ffmpeg_protocol_is_not_reported_ready(tmp_path: Path) -> None:
+    report = Doctor(
+        system=lambda: "Darwin",
+        machine=lambda: "arm64",
+        which=lambda command: sys.executable if command == "ffmpeg" else None,
+        vision_binary=lambda: Path("/usr/bin/vision-helper"),
+        vision_probe=working_vision,
+        import_module=lambda _name: SimpleNamespace(),
+        model_cache=FakeCache(tmp_path),
+    ).run()
+
+    assert not report.ready
+    assert not report.check("ffmpeg").ok
+    assert report.check("ffmpeg").path == Path(sys.executable)
+
+
+def test_ffmpeg_probe_runs_version_command_with_bounded_timeout(monkeypatch) -> None:
+    observed: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command, **kwargs):
+        observed.append((command, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ffmpeg version 7.1 Copyright (c) FFmpeg developers\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor_module.subprocess, "run", run)
+
+    ok, detail = doctor_module._probe_ffmpeg_binary(Path("/opt/ffmpeg/bin/ffmpeg"))
+
+    assert ok
+    assert "7.1" in detail
+    assert observed == [
+        (
+            ["/opt/ffmpeg/bin/ffmpeg", "-version"],
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "stdin": subprocess.DEVNULL,
+                "timeout": 5,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("completed", "expected"),
+    (
+        (SimpleNamespace(returncode=1, stdout="", stderr="broken DLL"), "broken DLL"),
+        (SimpleNamespace(returncode=0, stdout="", stderr=""), "version banner"),
+        (
+            SimpleNamespace(returncode=0, stdout="not really ffmpeg\n", stderr=""),
+            "version banner",
+        ),
+    ),
+)
+def test_ffmpeg_probe_rejects_failed_or_fake_versions(
+    monkeypatch, completed, expected: str
+) -> None:
+    monkeypatch.setattr(doctor_module.subprocess, "run", lambda *_args, **_kwargs: completed)
+
+    ok, detail = doctor_module._probe_ffmpeg_binary(Path("/ffmpeg"))
+
+    assert not ok
+    assert expected in detail
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (
+        (subprocess.TimeoutExpired(cmd="ffmpeg -version", timeout=5), "timed out"),
+        (PermissionError("permission denied"), "permission denied"),
+    ),
+)
+def test_ffmpeg_probe_converts_startup_and_timeout_errors_to_diagnostics(
+    monkeypatch, failure: Exception, expected: str
+) -> None:
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(doctor_module.subprocess, "run", fail)
+
+    ok, detail = doctor_module._probe_ffmpeg_binary(Path("/ffmpeg"))
+
+    assert not ok
+    assert expected in detail
 
 
 def test_unsupported_host_and_missing_dependencies_are_structured(tmp_path: Path) -> None:
@@ -254,6 +353,7 @@ def test_empty_whisper_cache_is_nonfatal_and_never_downloads(tmp_path: Path) -> 
         system=lambda: "Darwin",
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
+        ffmpeg_probe=working_ffmpeg,
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
         vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
@@ -271,6 +371,7 @@ def test_report_serializes_to_json_ready_primitives(tmp_path: Path) -> None:
         system=lambda: "Darwin",
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
+        ffmpeg_probe=working_ffmpeg,
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
         vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
@@ -302,6 +403,7 @@ def test_unknown_check_key_raises_key_error(tmp_path: Path) -> None:
         system=lambda: "Darwin",
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
+        ffmpeg_probe=working_ffmpeg,
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
         vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
@@ -334,6 +436,7 @@ def test_doctor_reports_actual_huggingface_snapshot_path(tmp_path: Path) -> None
         system=lambda: "Darwin",
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
+        ffmpeg_probe=working_ffmpeg,
         vision_binary=lambda: Path("/usr/bin/vision-helper"),
         vision_probe=working_vision,
         import_module=lambda _name: SimpleNamespace(),
@@ -350,6 +453,7 @@ def test_broken_vision_protocol_makes_doctor_not_ready(tmp_path: Path) -> None:
         system=lambda: "Darwin",
         machine=lambda: "arm64",
         which=lambda _command: "/usr/bin/ffmpeg",
+        ffmpeg_probe=working_ffmpeg,
         vision_binary=lambda: Path("/usr/bin/broken-helper"),
         vision_probe=lambda _path: (False, "Vision returned invalid JSON"),
         import_module=lambda _name: SimpleNamespace(),
