@@ -1,4 +1,8 @@
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
@@ -78,6 +82,56 @@ def test_export_writes_four_atomic_outputs(tmp_path):
     assert payload["extraction_method"] == "apple-vision-ocr"
     assert payload["segment_count"] == 2
     assert not list(output.directory.glob("*.partial"))
+
+
+def test_concurrent_exports_to_same_directory_do_not_interleave(tmp_path, monkeypatch):
+    from youtubetext import export as export_module
+
+    original_write = export_module._atomic_write_many
+    active = 0
+    peak = 0
+    count_lock = threading.Lock()
+    start = threading.Barrier(2)
+
+    def slow_write(outputs):
+        nonlocal active, peak
+        with count_lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.03)
+            original_write(outputs)
+        finally:
+            with count_lock:
+                active -= 1
+
+    monkeypatch.setattr(export_module, "_atomic_write_many", slow_write)
+    first = replace(sample_transcript(), segments=(TranscriptSegment(0, 1, "first"),))
+    second = replace(
+        first,
+        method=TranscriptMethod.MLX_WHISPER,
+        segments=(TranscriptSegment(0, 1, "second"),),
+    )
+
+    def write(transcript):
+        start.wait()
+        return export_transcript(transcript, tmp_path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(write, transcript) for transcript in (first, second)]
+        outputs = [future.result() for future in futures]
+
+    assert outputs[0].directory == outputs[1].directory
+    assert peak == 1
+    content = outputs[0].markdown.read_text(encoding="utf-8")
+    payload = json.loads(outputs[0].metadata.read_text(encoding="utf-8"))
+    expected = {
+        "first": "apple-vision-ocr",
+        "second": "mlx-whisper",
+    }
+    assert ("first" in content) != ("second" in content)
+    assert payload["extraction_method"] == expected["first" if "first" in content else "second"]
+    assert not list(outputs[0].directory.glob("*.partial"))
 
 
 @pytest.mark.parametrize(

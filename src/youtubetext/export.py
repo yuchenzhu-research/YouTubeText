@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import unicodedata
 import uuid
 from dataclasses import asdict
@@ -24,6 +25,11 @@ _WINDOWS_RESERVED_NAMES = {
     "lpt²",
     "lpt³",
 }
+
+# Different URL spellings can resolve to the same video and output directory.
+# Extraction stays concurrent; only the brief file replacement phase is
+# serialized so a single process cannot interleave two transcript bundles.
+_EXPORT_LOCK = threading.Lock()
 
 
 def format_timestamp(seconds: float) -> str:
@@ -145,22 +151,22 @@ def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:
     clean_markdown = directory / "transcript-clean.md"
     text = directory / "transcript.txt"
     metadata = directory / "metadata.json"
-    _atomic_write_many(
+    outputs = (
+        (markdown, render_markdown(transcript)),
+        (clean_markdown, render_clean_markdown(transcript)),
+        (text, render_text(transcript)),
         (
-            (markdown, render_markdown(transcript)),
-            (clean_markdown, render_clean_markdown(transcript)),
-            (text, render_text(transcript)),
-            (
-                metadata,
-                json.dumps(
-                    metadata_payload(transcript),
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-            ),
-        )
+            metadata,
+            json.dumps(
+                metadata_payload(transcript),
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+        ),
     )
+    with _EXPORT_LOCK:
+        _atomic_write_many(outputs)
     return OutputFiles(
         directory=directory,
         markdown=markdown,

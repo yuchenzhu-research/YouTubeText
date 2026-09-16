@@ -52,6 +52,29 @@ async def test_engine_exports_success_and_keeps_other_failure(tmp_path: Path):
     assert ("https://youtu.be/good", Stage.COMPLETE) in events
 
 
+@pytest.mark.asyncio
+async def test_engine_processes_repeated_url_only_once(tmp_path: Path):
+    class CountingAcquirer(FakeAcquirer):
+        def __init__(self):
+            self.calls = []
+
+        async def acquire(self, url, options, gates, progress):
+            self.calls.append(url)
+            return await super().acquire(url, options, gates, progress)
+
+    acquirer = CountingAcquirer()
+    host = HostProfile("Darwin", "arm64", 16 * 1024**3, 8)
+    engine = YouTubeTextEngine(acquirer, CapacityPlan.for_host(host, requested_jobs=2))
+    results = await engine.process(
+        [" https://youtu.be/good ", "https://youtu.be/good"],
+        TaskOptions(output_dir=tmp_path),
+    )
+
+    assert [result.url for result in results] == ["https://youtu.be/good"]
+    assert acquirer.calls == ["https://youtu.be/good"]
+    assert results[0].output.markdown.is_file()
+
+
 class FakePlanningAcquirer:
     def __init__(self) -> None:
         self.acquire_calls = 0
@@ -102,6 +125,19 @@ async def test_engine_plans_in_order_and_isolates_metadata_errors(tmp_path: Path
     assert results[2].succeeded
     assert acquirer.peak == 2
     assert acquirer.acquire_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_engine_plans_repeated_url_only_once(tmp_path: Path):
+    host = HostProfile("Darwin", "arm64", 16 * 1024**3, 8)
+    acquirer = FakePlanningAcquirer()
+    engine = YouTubeTextEngine(acquirer, CapacityPlan.for_host(host, requested_jobs=2))
+    results = await engine.plan(
+        [" https://youtu.be/same ", "https://youtu.be/same"],
+        TaskOptions(output_dir=tmp_path),
+    )
+
+    assert [result.url for result in results] == ["https://youtu.be/same"]
 
 
 @pytest.mark.asyncio

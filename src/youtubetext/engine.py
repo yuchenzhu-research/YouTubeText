@@ -87,4 +87,6 @@ def _normalize_urls(urls: list[str]) -> list[str]:
     normalized = [url.strip() for url in urls]
     if any(not url for url in normalized):
         raise ValueError("URLs must not be empty")
-    return normalized
+    # Repeating a URL in one queue must not start competing writes to its
+    # transcript directory. Keep the first occurrence and its input order.
+    return list(dict.fromkeys(normalized))
