@@ -120,6 +120,15 @@ class SourceClient:
                 selected.language,
                 selected.kind,
             )
+            if _grossly_incomplete_caption(
+                subtitle,
+                inspection.metadata.duration_seconds,
+            ):
+                raise SourceFetchError(
+                    "subtitle validation",
+                    "incomplete platform caption track ends near the start of "
+                    "the video",
+                )
         except SourceFetchError as exc:
             if strict_subtitles:
                 raise
@@ -302,6 +311,23 @@ def _select_subtitle(
     if manual:
         return _best_language(manual, adapter.language_priority), SubtitleKind.MANUAL
     return _best_language(automatic, adapter.language_priority), SubtitleKind.AUTOMATIC
+
+
+def _grossly_incomplete_caption(
+    subtitle: SubtitleTrack,
+    duration_seconds: float,
+) -> bool:
+    """Reject only tracks that stop very early in a known-length video.
+
+    Sparse speech can be legitimate, so a low cue count or low overall coverage
+    alone is not grounds for rejection. The long trailing gap and first-tenth
+    cutoff intentionally leave borderline tracks in the caption path.
+    """
+
+    if duration_seconds < 90:
+        return False
+    last_end = max(segment.end_seconds for segment in subtitle.segments)
+    return last_end <= duration_seconds * 0.1 and duration_seconds - last_end >= 60
 
 
 def _available_languages(raw: object) -> tuple[str, ...]:
