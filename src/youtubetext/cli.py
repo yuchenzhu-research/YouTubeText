@@ -45,7 +45,7 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     name="youtubetext",
     context_settings={"help_option_names": ["-h", "--help"]},
     help=(
-        "Extract timestamped text from one or more YouTube or Bilibili URLs.\n\n"
+        "Export timestamped and clean transcripts from YouTube or Bilibili URLs.\n\n"
         "Run 'youtubetext doctor' to inspect local requirements without a URL."
     ),
 )
@@ -272,6 +272,7 @@ def _result_payload(result: TaskResult) -> dict[str, Any]:
         payload["output"] = {
             "directory": str(result.output.directory),
             "markdown": str(result.output.markdown),
+            "clean_markdown": str(result.output.clean_markdown),
             "text": str(result.output.text),
             "metadata": str(result.output.metadata),
         }

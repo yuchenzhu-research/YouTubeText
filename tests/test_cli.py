@@ -39,6 +39,7 @@ def successful_result(url: str, root: Path, title: str = "Video") -> TaskResult:
     output = OutputFiles(
         directory=root / "video",
         markdown=root / "video" / "transcript.md",
+        clean_markdown=root / "video" / "transcript-clean.md",
         text=root / "video" / "transcript.txt",
         metadata=root / "video" / "metadata.json",
     )
@@ -274,6 +275,9 @@ def test_json_output_is_ordered_and_contains_no_progress(monkeypatch, tmp_path):
     assert payload["success"] is False
     assert [item["url"] for item in payload["results"]] == [URL_1, URL_2]
     assert payload["results"][0]["title"] == "第一条"
+    assert payload["results"][0]["output"]["clean_markdown"].endswith(
+        "transcript-clean.md"
+    )
     assert payload["results"][0]["output"]["text"].endswith("transcript.txt")
     assert payload["results"][1]["error"] == "failed"
     assert "Metadata read" not in result.output

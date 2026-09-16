@@ -111,6 +111,7 @@ class TaskOptions:
 class OutputFiles:
     directory: Path
     markdown: Path
+    clean_markdown: Path
     text: Path
     metadata: Path
 
@@ -125,4 +126,3 @@ class TaskResult:
     @property
     def succeeded(self) -> bool:
         return self.transcript is not None and self.output is not None and not self.error
-

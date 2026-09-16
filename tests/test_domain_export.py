@@ -12,6 +12,7 @@ from youtubetext.export import (
     _atomic_write,
     _atomic_write_many,
     export_transcript,
+    render_clean_markdown,
     render_markdown,
     render_text,
 )
@@ -56,10 +57,21 @@ def test_render_formats_are_timestamped():
     assert "Extraction: apple-vision-ocr" in markdown
 
 
-def test_export_writes_three_atomic_outputs(tmp_path):
+def test_clean_markdown_contains_full_text_without_segment_timestamps():
+    clean_markdown = render_clean_markdown(sample_transcript())
+
+    assert "第一句\n\nSecond line" in clean_markdown
+    assert "**[00:00 - 00:04]**" not in clean_markdown
+    assert "Extraction: apple-vision-ocr" in clean_markdown
+
+
+def test_export_writes_four_atomic_outputs(tmp_path):
     output = export_transcript(sample_transcript(), tmp_path)
     assert output.directory.name == "abc123-A title - with unsafe punctuation"
     assert output.markdown.read_text(encoding="utf-8").startswith("# A title")
+    assert output.clean_markdown.name == "transcript-clean.md"
+    assert output.clean_markdown.is_file()
+    assert "**[" not in output.clean_markdown.read_text(encoding="utf-8")
     assert output.text.is_file()
     payload = json.loads(output.metadata.read_text(encoding="utf-8"))
     assert payload["extraction_method"] == "apple-vision-ocr"

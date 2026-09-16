@@ -1,4 +1,4 @@
-"""Atomic Markdown, TXT and JSON export for a completed transcript."""
+"""Atomic timed/clean Markdown, TXT and JSON transcript export."""
 from __future__ import annotations
 
 import json
@@ -33,7 +33,7 @@ def _segment_markdown(segment: TranscriptSegment) -> str:
     return f"**[{start} - {end}]**\n\n{segment.text}"
 
 
-def render_markdown(transcript: Transcript) -> str:
+def _render_markdown_document(transcript: Transcript, body: str) -> str:
     meta = transcript.metadata
     lines = [
         f"# {meta.title}",
@@ -47,12 +47,26 @@ def render_markdown(transcript: Transcript) -> str:
         "",
         "## Transcript",
         "",
+        body,
     ]
-    lines.append("\n\n".join(_segment_markdown(item) for item in transcript.segments))
     if transcript.warnings:
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- {warning}" for warning in transcript.warnings)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_markdown(transcript: Transcript) -> str:
+    """Render the complete transcript with one timestamp per segment."""
+
+    body = "\n\n".join(_segment_markdown(item) for item in transcript.segments)
+    return _render_markdown_document(transcript, body)
+
+
+def render_clean_markdown(transcript: Transcript) -> str:
+    """Render the complete transcript without per-segment timestamps."""
+
+    body = "\n\n".join(item.text for item in transcript.segments)
+    return _render_markdown_document(transcript, body)
 
 
 def render_text(transcript: Transcript) -> str:
@@ -104,11 +118,13 @@ def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:
     directory.mkdir(parents=True, exist_ok=True)
 
     markdown = directory / "transcript.md"
+    clean_markdown = directory / "transcript-clean.md"
     text = directory / "transcript.txt"
     metadata = directory / "metadata.json"
     _atomic_write_many(
         (
             (markdown, render_markdown(transcript)),
+            (clean_markdown, render_clean_markdown(transcript)),
             (text, render_text(transcript)),
             (
                 metadata,
@@ -121,4 +137,10 @@ def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:
             ),
         )
     )
-    return OutputFiles(directory=directory, markdown=markdown, text=text, metadata=metadata)
+    return OutputFiles(
+        directory=directory,
+        markdown=markdown,
+        clean_markdown=clean_markdown,
+        text=text,
+        metadata=metadata,
+    )

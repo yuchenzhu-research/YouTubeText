@@ -1,7 +1,7 @@
 # YouTubeText
 
 YouTubeText 是一款面向 Apple Silicon Mac 的终端工具，可将 YouTube 和 Bilibili
-视频转换为干净、带时间戳的 Markdown 与 TXT 全文。
+视频转换为带时间轴的 Markdown/TXT 全文，以及无时间轴的纯净 Markdown 全文。
 
 它只负责提取完整文字，不生成摘要，不分析观点，也不需要 Ollama、LLM 或云端 AI API。
 
@@ -12,7 +12,8 @@ YouTubeText 是一款面向 Apple Silicon Mac 的终端工具，可将 YouTube �
 - 优先下载平台提供的人工字幕或自动字幕。
 - 无字幕轨时，使用 macOS Apple Vision 识别画面中的硬字幕。
 - 没有可用硬字幕时，使用本地 MLX Whisper 识别语音。
-- 输出 `transcript.md`、`transcript.txt` 和 `metadata.json`。
+- 同时输出带时间轴的 `transcript.md` 和无时间轴的 `transcript-clean.md`。
+- 另外输出带时间轴的 `transcript.txt` 和任务信息 `metadata.json`。
 - 每个 URL 独立成功或失败，一个任务出错不会取消其他任务。
 - 按 `Ctrl-C` 会终止本次运行中的下载与本地识别，并清理临时媒体。
 
@@ -156,12 +157,14 @@ auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 YouTubeText-output/
   VIDEO_ID-视频标题/
     transcript.md
+    transcript-clean.md
     transcript.txt
     metadata.json
 ```
 
-Markdown 和 TXT 都包含时间戳与完整文字。JSON 保存来源 URL、平台、作者、时长、
-语言、提取方式、片段数量和警告。
+`transcript.md` 和 `transcript.txt` 包含时间戳与完整文字；`transcript-clean.md`
+保留 Markdown 标题、视频信息和完整正文，但不包含逐段时间轴。JSON 保存来源 URL、
+平台、作者、时长、语言、提取方式、片段数量和警告。
 
 ## 并行与资源控制
 
@@ -215,7 +218,7 @@ Whisper 只在没有可用字幕轨和硬字幕，或明确选择 `whisper` / `h
 - `asr/`：MLX Whisper、模型选择与缓存复用。
 - `acquisition.py`：字幕、OCR、Whisper 之间的路由策略。
 - `runtime.py`：本机资源检测与多 URL 调度。
-- `export.py`：Markdown、TXT、JSON 原子写入。
+- `export.py`：两种 Markdown、TXT、JSON 的分组原子写入。
 - `cli.py`：终端入口。
 
 ## 当前限制

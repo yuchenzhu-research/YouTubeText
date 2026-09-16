@@ -44,5 +44,6 @@ async def test_engine_exports_success_and_keeps_other_failure(tmp_path: Path):
     )
     assert results[0].succeeded
     assert results[0].output.markdown.is_file()
+    assert results[0].output.clean_markdown.is_file()
     assert results[1].error == "source failed"
     assert ("https://youtu.be/good", Stage.COMPLETE) in events
