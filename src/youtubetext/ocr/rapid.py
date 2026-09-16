@@ -12,8 +12,14 @@ from typing import Any, Protocol
 
 from ..runtime import run_blocking
 from .types import BoundingBox, OCRFrame, OCRObservation
+from .vision import vision_language_codes
 
-RAPID_OCR_REVISION = "rapidocr-ppocrv6-small-multilingual-v1"
+RAPID_OCR_REVISION = "rapidocr-ppocrv6-small-multilingual-v2-language-checked"
+# RapidOCR >=3.9 ships PP-OCRv6 small by default. Its recognition model is
+# multilingual, but does not cover every language accepted by the CLI.
+RAPID_OCR_LANGUAGES = frozenset(
+    {"zh", "en", "es", "ja", "fr", "de", "pt", "it", "vi"}
+)
 
 
 class RapidOCRUnavailableError(RuntimeError):
@@ -32,6 +38,27 @@ class _RapidEngine(Protocol):
 
 
 EngineFactory = Callable[[], _RapidEngine]
+
+
+def rapid_language_codes(language: str | None) -> tuple[str, ...]:
+    """Resolve a CLI language only if the bundled PP-OCRv6 model covers it."""
+
+    codes = vision_language_codes(language)
+    _validate_languages(codes)
+    return codes
+
+
+def _validate_languages(languages: Sequence[str]) -> None:
+    for language in languages:
+        code = language.strip().replace("_", "-").casefold()
+        if not code or code == "auto":
+            continue
+        base = code.split("-", 1)[0]
+        if base not in RAPID_OCR_LANGUAGES:
+            raise ValueError(
+                f"Windows RapidOCR PP-OCRv6 small does not support OCR language "
+                f"'{base}'; use platform captions or --mode whisper"
+            )
 
 
 class RapidOCRBackend:
@@ -64,9 +91,10 @@ class RapidOCRBackend:
     ) -> tuple[OCRFrame, ...]:
         """Recognize images in order while isolating per-frame failures."""
 
-        del languages, accurate
+        del accurate
         if not 0 <= minimum_text_height <= 1:
             raise ValueError("minimum_text_height must be between zero and one")
+        _validate_languages(languages)
         if not image_paths:
             return ()
 
@@ -117,9 +145,20 @@ class RapidOCRBackend:
 
 def _load_engine() -> _RapidEngine:
     try:
-        from rapidocr import RapidOCR
+        from rapidocr import EngineType, ModelType, OCRVersion, RapidOCR
 
-        return RapidOCR()
+        # Language coverage is tied to this model family. Keep both detection
+        # and recognition pinned even if a future 3.x release changes defaults.
+        return RapidOCR(
+            params={
+                "Det.engine_type": EngineType.ONNXRUNTIME,
+                "Det.model_type": ModelType.SMALL,
+                "Det.ocr_version": OCRVersion.PPOCRV6,
+                "Rec.engine_type": EngineType.ONNXRUNTIME,
+                "Rec.model_type": ModelType.SMALL,
+                "Rec.ocr_version": OCRVersion.PPOCRV6,
+            }
+        )
     except ImportError as error:  # pragma: no cover - Windows packaging failure
         raise RapidOCRUnavailableError(
             "RapidOCR or ONNX Runtime is not installed correctly; "

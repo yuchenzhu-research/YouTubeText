@@ -6,6 +6,7 @@ import stat
 from dataclasses import replace
 from pathlib import Path
 
+import youtubetext.cache as cache_module
 from youtubetext.cache import CACHE_SCHEMA, TranscriptCache
 from youtubetext.domain import (
     ProcessingMode,
@@ -141,6 +142,24 @@ def test_corrupt_or_old_cache_is_treated_as_a_miss(tmp_path):
         encoding="utf-8",
     )
     assert cache.load(transcript.metadata, options) is None
+
+
+def test_legacy_ocr_cache_is_not_reused_after_language_policy_change(
+    tmp_path, monkeypatch
+):
+    transcript = sample_transcript()
+    options = TaskOptions(mode=ProcessingMode.OCR, language="ko")
+    cache = TranscriptCache(tmp_path / "cache")
+    current_revision = cache_module.PIPELINE_REVISION
+    assert current_revision != "fallback-transcript-v1"
+
+    monkeypatch.setattr(cache_module, "PIPELINE_REVISION", "fallback-transcript-v1")
+    assert cache.save(transcript, options)
+    legacy_file = next(cache.root.glob("*.json"))
+    monkeypatch.setattr(cache_module, "PIPELINE_REVISION", current_revision)
+
+    assert cache.load(transcript.metadata, options) is None
+    assert legacy_file.is_file()
 
 
 def test_payload_with_a_different_source_identity_is_rejected(tmp_path):

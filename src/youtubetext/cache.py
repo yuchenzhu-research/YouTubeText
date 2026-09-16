@@ -21,7 +21,7 @@ from .domain import (
 )
 
 CACHE_SCHEMA = 1
-PIPELINE_REVISION = "fallback-transcript-v1"
+PIPELINE_REVISION = "fallback-transcript-v2-windows-ocr-language-checked"
 
 
 class TranscriptCache:

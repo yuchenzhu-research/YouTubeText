@@ -285,9 +285,13 @@ auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
 
 macOSで`auto`を選択すると、Apple Visionはタイトルと投稿者の文脈を使って
-認識言語を優先します。WindowsのRapidOCRは現在、デフォルトのモデルを使用し、
-`--language`によってOCRモデルを切り替えません。どちらのWhisperエンジンも
-音声言語を自動検出できます。
+認識言語を優先します。WindowsのRapidOCRに既定で含まれるPP-OCRv6 smallは、
+モデル切り替えなしで`en`、`zh-Hans`、`zh-Hant`、`es`、`ja`、`fr`、
+`de`、`pt`、`it`、`vi`を認識します。`--language`は出力を1言語に
+限定しません。OCRは`ko`、`ru`、`ar`、`hi`には非対応です。OCR強制モード
+ではエラーになり、`auto`と`hybrid`では警告のうえWhisperに切り替わります。
+プラットフォーム字幕とWhisperではこれらの言語も利用できます。
+どちらのWhisperエンジンも音声言語を自動検出できます。
 
 プラットフォーム字幕の優先言語は、順序付きリストとして別途指定できます。
 

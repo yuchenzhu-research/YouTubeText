@@ -292,9 +292,14 @@ auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
 
 En macOS, Apple Vision usa el contexto del título y del autor para priorizar
-los idiomas de reconocimiento cuando se selecciona `auto`. En Windows, RapidOCR
-usa actualmente su modelo predeterminado y `--language` no cambia el modelo OCR.
-Ambos motores Whisper pueden detectar automáticamente el idioma hablado.
+los idiomas de reconocimiento cuando se selecciona `auto`. En Windows, el
+modelo predeterminado PP-OCRv6 small de RapidOCR reconoce `en`, `zh-Hans`,
+`zh-Hant`, `es`, `ja`, `fr`, `de`, `pt`, `it` y `vi` sin cambiar de modelo;
+`--language` no limita la salida a un solo idioma. El OCR no admite `ko`, `ru`,
+`ar` ni `hi`: el modo OCR forzado muestra un error, mientras que `auto` e
+`hybrid` avisan y usan Whisper. Los subtítulos de la plataforma y Whisper sí
+pueden usar esos idiomas. Ambos motores Whisper pueden detectar automáticamente
+el idioma hablado.
 
 Configura por separado una lista ordenada de idiomas preferidos para los
 subtítulos de la plataforma:

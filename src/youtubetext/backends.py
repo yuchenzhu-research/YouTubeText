@@ -13,6 +13,7 @@ from .ocr import (
     MacVisionOCR,
     OCRFrame,
     RapidOCRBackend,
+    rapid_language_codes,
     vision_language_codes,
 )
 from .runtime import HostKind, HostProfile, detect_host
@@ -68,6 +69,7 @@ def default_local_backends(host: HostProfile | None = None) -> LocalBackends:
             asr_label="faster-whisper",
             ocr_method=TranscriptMethod.RAPID_OCR,
             asr_method=TranscriptMethod.FASTER_WHISPER,
+            ocr_language_codes=rapid_language_codes,
         )
     raise RuntimeError(
         "YouTubeText has no local model backends for "

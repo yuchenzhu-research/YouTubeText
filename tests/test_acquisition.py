@@ -23,6 +23,7 @@ from youtubetext.domain import (
 )
 from youtubetext.media import MediaPurpose, SampledFrame
 from youtubetext.ocr import BoundingBox, OCRFrame, OCRObservation
+from youtubetext.ocr.rapid import rapid_language_codes
 from youtubetext.progress import Stage
 from youtubetext.resume import LocalResumeStore
 from youtubetext.runtime import CapacityPlan, HostProfile, ResourceGates
@@ -193,6 +194,7 @@ def windows_backend_labels() -> LocalBackends:
         asr_label="faster-whisper",
         ocr_method=TranscriptMethod.RAPID_OCR,
         asr_method=TranscriptMethod.FASTER_WHISPER,
+        ocr_language_codes=rapid_language_codes,
     )
 
 
@@ -498,6 +500,107 @@ async def test_windows_backends_record_the_actual_ocr_and_asr_methods(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_windows_forced_ocr_rejects_unsupported_language(tmp_path):
+    instance, _sources, _media, ocr, asr = pipeline(
+        tmp_path,
+        backends=windows_backend_labels(),
+    )
+
+    with pytest.raises(
+        TranscriptAcquisitionError,
+        match="does not support OCR language 'ko'",
+    ):
+        await instance.acquire(
+            URL,
+            TaskOptions(mode=ProcessingMode.OCR, language="ko"),
+            gates(),
+            no_progress,
+        )
+
+    assert ocr.languages == ()
+    assert asr.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", (ProcessingMode.AUTO, ProcessingMode.HYBRID))
+async def test_windows_auto_and_hybrid_warn_and_fall_back_for_unsupported_ocr_language(
+    tmp_path, mode,
+):
+    instance, _sources, media, ocr, asr = pipeline(
+        tmp_path,
+        backends=windows_backend_labels(),
+    )
+
+    result = await instance.acquire(
+        URL,
+        TaskOptions(mode=mode, language="ru"),
+        gates(),
+        no_progress,
+    )
+
+    assert result.method is TranscriptMethod.FASTER_WHISPER
+    assert any("does not support OCR language 'ru'" in warning for warning in result.warnings)
+    assert media.purposes == [MediaPurpose.ANALYSIS_VIDEO]
+    assert ocr.languages == ()
+    assert asr.calls == [("video.mp4", "ru")]
+
+
+@pytest.mark.asyncio
+async def test_windows_ocr_accepts_spanish_with_multilingual_model(tmp_path):
+    texts = (
+        "La situación internacional cambia cada día",
+        "Los bancos centrales revisan sus decisiones",
+        "Las empresas preparan nuevos planes económicos",
+        "Los gobiernos responden a la presión pública",
+        "Los ciudadanos estudian las distintas propuestas",
+        "La conversación continúa durante toda la semana",
+    )
+    instance, _sources, _media, ocr, asr = pipeline(
+        tmp_path,
+        ocr_texts=texts,
+        backends=windows_backend_labels(),
+    )
+
+    result = await instance.acquire(
+        URL,
+        TaskOptions(mode=ProcessingMode.OCR, language="es"),
+        gates(),
+        no_progress,
+    )
+
+    assert result.method is TranscriptMethod.RAPID_OCR
+    assert result.language == "es"
+    assert ocr.languages == ("es-ES",)
+    assert asr.calls == []
+
+
+@pytest.mark.asyncio
+async def test_windows_auto_can_use_captions_before_unsupported_ocr_language(tmp_path):
+    caption = SubtitleTrack(
+        "ko",
+        SubtitleKind.MANUAL,
+        (TranscriptSegment(0, 12, "플랫폼 자막을 사용합니다"),),
+    )
+    instance, _sources, media, ocr, asr = pipeline(
+        tmp_path,
+        subtitle=caption,
+        backends=windows_backend_labels(),
+    )
+
+    result = await instance.acquire(
+        URL,
+        TaskOptions(mode=ProcessingMode.AUTO, language="ko"),
+        gates(),
+        no_progress,
+    )
+
+    assert result.method is TranscriptMethod.PLATFORM_CAPTIONS
+    assert media.purposes == []
+    assert ocr.languages == ()
+    assert asr.calls == []
+
+
+@pytest.mark.asyncio
 async def test_forced_ocr_does_not_silently_switch_to_whisper(tmp_path):
     instance, _sources, _media, _ocr, asr = pipeline(tmp_path)
 
@@ -581,6 +684,25 @@ def test_ocr_quality_rejects_static_and_sparse_watermarks():
     )
     assert not _ocr_is_usable(sparse, 600)
     assert _ocr_is_usable((TranscriptSegment(0, 4, "短视频字幕"),), 5)
+
+
+def test_ocr_quality_rejects_dense_screen_interface_text():
+    interface = "登录创作中心查看视频管理合集播放数据评论设置推荐活动消息通知"
+    segments = tuple(
+        TranscriptSegment(second, second + 1, f"{interface * 3}{second}")
+        for second in range(11)
+    )
+
+    assert not _ocr_is_usable(segments, 31)
+
+
+def test_ocr_quality_keeps_distinct_spoken_caption_lines():
+    segments = tuple(
+        TranscriptSegment(second, second + 1, f"字幕内容正在讲述当天新闻{second}")
+        for second in range(11)
+    )
+
+    assert _ocr_is_usable(segments, 31)
 
 
 def test_hybrid_keeps_asr_segment_that_spans_both_sides_of_ocr():

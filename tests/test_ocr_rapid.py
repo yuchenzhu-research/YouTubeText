@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from youtubetext.ocr import RapidOCRBackend, RapidOCRUnavailableError
-from youtubetext.ocr.rapid import _load_engine
+from youtubetext.ocr.rapid import _load_engine, rapid_language_codes
 
 
 @dataclass
@@ -99,6 +99,35 @@ def test_rapidocr_empty_input_does_not_create_engine() -> None:
     )
 
     assert backend.recognize_images(()) == ()
+
+
+@pytest.mark.parametrize(
+    "language, expected",
+    (("auto", ()), ("es", ("es-ES",)), ("zh-Hant", ("zh-Hant",))),
+)
+def test_rapidocr_language_codes_accept_default_model_languages(
+    language: str, expected: tuple[str, ...]
+) -> None:
+    assert rapid_language_codes(language) == expected
+
+
+@pytest.mark.parametrize("language", ("ko", "ru", "ar", "hi"))
+def test_rapidocr_language_codes_reject_unsupported_ocr_languages(
+    language: str,
+) -> None:
+    with pytest.raises(ValueError, match=f"does not support OCR language '{language}'"):
+        rapid_language_codes(language)
+
+
+def test_rapidocr_rejects_unsupported_language_before_engine_creation() -> None:
+    backend = RapidOCRBackend(
+        engine_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("engine must stay lazy")
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not support OCR language 'ko'"):
+        backend.recognize_images(("frame.jpg",), languages=("ko-KR",))
 
 
 def test_rapidocr_rejects_invalid_minimum_height() -> None:
@@ -211,17 +240,51 @@ def test_rapidocr_factory_failure_is_a_batch_error(tmp_path: Path) -> None:
 
 def test_rapidocr_wraps_constructor_import_errors(monkeypatch) -> None:
     class BrokenRapidOCR:
-        def __init__(self) -> None:
+        def __init__(self, **_kwargs) -> None:
             raise ImportError("onnxruntime is missing")
 
     monkeypatch.setitem(
         sys.modules,
         "rapidocr",
-        types.SimpleNamespace(RapidOCR=BrokenRapidOCR),
+        types.SimpleNamespace(
+            RapidOCR=BrokenRapidOCR,
+            EngineType=types.SimpleNamespace(ONNXRUNTIME="onnxruntime"),
+            ModelType=types.SimpleNamespace(SMALL="small"),
+            OCRVersion=types.SimpleNamespace(PPOCRV6="PP-OCRv6"),
+        ),
     )
 
     with pytest.raises(RapidOCRUnavailableError, match="ONNX Runtime"):
         _load_engine()
+
+
+def test_rapidocr_pins_the_documented_multilingual_model(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    class RecordingRapidOCR:
+        def __init__(self, *, params: dict[str, object]) -> None:
+            seen.update(params)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(
+            RapidOCR=RecordingRapidOCR,
+            EngineType=types.SimpleNamespace(ONNXRUNTIME="onnxruntime"),
+            ModelType=types.SimpleNamespace(SMALL="small"),
+            OCRVersion=types.SimpleNamespace(PPOCRV6="PP-OCRv6"),
+        ),
+    )
+
+    assert isinstance(_load_engine(), RecordingRapidOCR)
+    assert seen == {
+        "Det.engine_type": "onnxruntime",
+        "Det.model_type": "small",
+        "Det.ocr_version": "PP-OCRv6",
+        "Rec.engine_type": "onnxruntime",
+        "Rec.model_type": "small",
+        "Rec.ocr_version": "PP-OCRv6",
+    }
 
 
 def test_rapidocr_checkpoint_revision_is_stable() -> None:

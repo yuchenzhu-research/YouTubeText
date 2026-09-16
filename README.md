@@ -286,9 +286,13 @@ auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
 
 On macOS, Apple Vision uses title and author context to prioritize recognition
-languages when `auto` is selected. Windows RapidOCR currently uses its default
-model rather than switching OCR models for `--language`. Both
-Whisper backends can detect spoken language automatically.
+languages when `auto` is selected. On Windows, RapidOCR's default PP-OCRv6 small
+model recognizes `en`, `zh-Hans`, `zh-Hant`, `es`, `ja`, `fr`, `de`, `pt`, `it`, and
+`vi` without switching models; `--language` does not restrict its output to one
+language. It does not support OCR for `ko`, `ru`, `ar`, or `hi`: forced OCR mode
+reports an error, while `auto` and `hybrid` warn and use Whisper. Platform
+captions and Whisper can still use those languages. Both Whisper backends can
+detect spoken language automatically.
 
 Set an ordered list of preferred platform-caption languages separately:
 

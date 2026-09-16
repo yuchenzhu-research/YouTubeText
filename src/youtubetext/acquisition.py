@@ -599,6 +599,12 @@ def _ocr_is_usable(
     normalized = [normalize_caption(segment.text) for segment in segments]
     characters = sum(len(text) for text in normalized)
     duration = max(0.0, float(duration_seconds or 0.0))
+    # Screen recordings can yield continuously changing UI text from the
+    # subtitle crop. Coverage and uniqueness alone mistake it for speech.
+    # Sustained text above a plausible caption reading rate is not a usable
+    # transcript, so auto/hybrid must fall back to the audio track.
+    if duration and characters / duration > 30:
+        return False
     if not duration or duration <= 10:
         return characters >= 4
     covered_ratio = _covered_duration(segments, duration) / duration

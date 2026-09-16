@@ -31,6 +31,9 @@ def test_windows_x64_composes_lazy_open_source_backends() -> None:
     assert backends.asr_method is TranscriptMethod.FASTER_WHISPER
     assert backends.ocr_label == "RapidOCR"
     assert backends.asr_label == "faster-whisper"
+    assert backends.ocr_language_codes("es") == ("es-ES",)
+    with pytest.raises(ValueError, match="does not support OCR language 'ru'"):
+        backends.ocr_language_codes("ru")
 
 
 def test_unsupported_host_has_no_accidental_model_fallback() -> None:

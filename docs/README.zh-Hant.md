@@ -268,8 +268,12 @@ auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
 
 在 macOS 選擇 `auto` 時，Apple Vision 會利用標題和作者內容設定辨識語言的
-優先順序。Windows RapidOCR 目前使用預設模型，不會因 `--language` 切換
-OCR 模型。兩種 Whisper 引擎都能自動偵測口語語言。
+優先順序。Windows RapidOCR 預設的 PP-OCRv6 small 模型可辨識 `en`、
+`zh-Hans`、`zh-Hant`、`es`、`ja`、`fr`、`de`、`pt`、`it`、`vi`，
+不必切換模型；`--language` 不會將輸出限制為單一語言。此模型的 OCR 不支援
+`ko`、`ru`、`ar`、`hi`：強制 OCR 模式會報錯，`auto` 和 `hybrid`
+會顯示警告並改用 Whisper。平台字幕與 Whisper 仍可使用這些語言。
+兩種 Whisper 引擎都能自動偵測口語語言。
 
 另行設定一份依優先順序排列的平台字幕語言清單：
 
