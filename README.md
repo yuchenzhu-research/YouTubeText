@@ -134,8 +134,16 @@ cd YouTubeText
 ./.venv/bin/youtubetext cache --json
 ```
 
-该命令只读，不会删除任何文件。要手动删除全部缓存，可在 Finder 中使用“前往文件夹”
-打开 `~/Library/Caches/YouTubeText/`。
+`cache` 和 `cache status` 都是只读操作。只删除失败或中断任务留下的媒体与 OCR 检查点，
+同时保留全部完整字幕：
+
+```bash
+./.venv/bin/youtubetext cache clear-incomplete
+```
+
+清理时正在运行并持锁的任务会被跳过；已删除的临时媒体无法恢复，但可从原 URL 重新下载。
+要手动删除包括完整字幕在内的全部缓存，可在 Finder 中使用“前往文件夹”打开
+`~/Library/Caches/YouTubeText/`。
 
 需要登录才能访问的视频，可以直接使用本机浏览器的登录状态：
 

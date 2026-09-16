@@ -9,6 +9,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -60,6 +61,24 @@ class CacheUsage:
                 "bytes": self.task_bytes,
             },
             "total_bytes": self.total_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CacheCleanup:
+    root: Path
+    removed_tasks: int = 0
+    removed_bytes: int = 0
+    active_tasks: int = 0
+    failed_tasks: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "root": str(self.root),
+            "removed_tasks": self.removed_tasks,
+            "removed_bytes": self.removed_bytes,
+            "active_tasks": self.active_tasks,
+            "failed_tasks": self.failed_tasks,
         }
 
 
@@ -203,6 +222,101 @@ class LocalResumeStore:
             task_bytes=task_bytes,
         )
 
+    def clear_incomplete(self) -> CacheCleanup:
+        """Delete abandoned task state while skipping every active task lock."""
+
+        root_descriptor: int | None = None
+        tasks_descriptor: int | None = None
+        locks_descriptor: int | None = None
+        try:
+            try:
+                root_descriptor = _open_directory(self.root)
+            except FileNotFoundError:
+                return CacheCleanup(root=self.root)
+            except OSError:
+                return CacheCleanup(root=self.root, failed_tasks=1)
+
+            try:
+                tasks_descriptor = _open_directory("tasks", dir_fd=root_descriptor)
+            except FileNotFoundError:
+                return CacheCleanup(root=self.root)
+            except OSError:
+                return CacheCleanup(root=self.root, failed_tasks=1)
+
+            try:
+                task_keys = _resumable_task_keys(tasks_descriptor)
+            except OSError:
+                return CacheCleanup(root=self.root, failed_tasks=1)
+            if not task_keys:
+                return CacheCleanup(root=self.root)
+
+            try:
+                os.fchmod(root_descriptor, 0o700)
+                locks_descriptor = _open_private_directory(
+                    root_descriptor,
+                    "locks",
+                )
+            except OSError:
+                return CacheCleanup(
+                    root=self.root,
+                    failed_tasks=len(task_keys),
+                )
+
+            removed_tasks = 0
+            removed_bytes = 0
+            active_tasks = 0
+            failed_tasks = 0
+            for task_key in task_keys:
+                descriptor: int | None = None
+                lock_acquired = False
+                try:
+                    descriptor = _open_lock_file(
+                        f"{task_key}.lock",
+                        dir_fd=locks_descriptor,
+                    )
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        active_tasks += 1
+                        continue
+                    lock_acquired = True
+
+                    if not _is_directory(task_key, dir_fd=tasks_descriptor):
+                        continue
+                    task_bytes = _regular_tree_bytes_at(
+                        tasks_descriptor,
+                        task_key,
+                    )
+                    if _remove_tree_at(tasks_descriptor, task_key):
+                        removed_tasks += 1
+                        removed_bytes += task_bytes
+                    else:
+                        failed_tasks += 1
+                except OSError:
+                    failed_tasks += 1
+                finally:
+                    if descriptor is not None:
+                        if lock_acquired:
+                            _release_lock(descriptor)
+                        else:
+                            os.close(descriptor)
+
+            return CacheCleanup(
+                root=self.root,
+                removed_tasks=removed_tasks,
+                removed_bytes=removed_bytes,
+                active_tasks=active_tasks,
+                failed_tasks=failed_tasks,
+            )
+        finally:
+            for directory_descriptor in (
+                locks_descriptor,
+                tasks_descriptor,
+                root_descriptor,
+            ):
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+
     async def run(
         self,
         metadata: SourceMetadata,
@@ -294,9 +408,8 @@ class LocalResumeStore:
         _ensure_private_directory(self.root)
         _ensure_private_directory(self._locks)
         path = self._locks / f"{key}.lock"
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        descriptor = _open_lock_file(path)
         try:
-            os.chmod(path, 0o600)
             while True:
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -690,6 +803,21 @@ def _task_tree_usage(root: Path) -> tuple[int, int]:
     return count, size
 
 
+def _resumable_task_keys(directory_descriptor: int) -> tuple[str, ...]:
+    with os.scandir(directory_descriptor) as entries:
+        keys: list[str] = []
+        for entry in entries:
+            try:
+                valid_key = len(entry.name) == 64 and all(
+                    character in "0123456789abcdef" for character in entry.name
+                )
+                if valid_key and entry.is_dir(follow_symlinks=False):
+                    keys.append(entry.name)
+            except OSError:
+                continue
+    return tuple(sorted(keys))
+
+
 def _regular_tree_bytes(root: Path) -> int:
     size = 0
     pending = [root]
@@ -708,6 +836,111 @@ def _regular_tree_bytes(root: Path) -> int:
         except OSError:
             continue
     return size
+
+
+def _regular_tree_bytes_at(parent_descriptor: int, name: str) -> int:
+    try:
+        root_descriptor = _open_directory(name, dir_fd=parent_descriptor)
+    except OSError:
+        return 0
+
+    size = 0
+    pending = [root_descriptor]
+    while pending:
+        directory_descriptor = pending.pop()
+        try:
+            with os.scandir(directory_descriptor) as entries:
+                for entry in entries:
+                    try:
+                        entry_stat = entry.stat(follow_symlinks=False)
+                        if stat.S_ISDIR(entry_stat.st_mode):
+                            pending.append(
+                                _open_directory(
+                                    entry.name,
+                                    dir_fd=directory_descriptor,
+                                )
+                            )
+                        elif stat.S_ISREG(entry_stat.st_mode):
+                            size += entry_stat.st_size
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        finally:
+            os.close(directory_descriptor)
+    return size
+
+
+def _open_directory(
+    path: str | Path,
+    *,
+    dir_fd: int | None = None,
+) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return os.open(path, flags, dir_fd=dir_fd)
+
+
+def _open_private_directory(parent_descriptor: int, name: str) -> int:
+    try:
+        descriptor = _open_directory(name, dir_fd=parent_descriptor)
+    except FileNotFoundError:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+        except FileExistsError:
+            pass
+        descriptor = _open_directory(name, dir_fd=parent_descriptor)
+    try:
+        os.fchmod(descriptor, 0o700)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _is_directory(name: str, *, dir_fd: int) -> bool:
+    try:
+        return stat.S_ISDIR(
+            os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
+        )
+    except FileNotFoundError:
+        return False
+
+
+def _remove_tree_at(parent_descriptor: int, name: str) -> bool:
+    try:
+        shutil.rmtree(name, dir_fd=parent_descriptor)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def _open_lock_file(
+    path: str | Path,
+    *,
+    dir_fd: int | None = None,
+) -> int:
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags, 0o600, dir_fd=dir_fd)
+        os.fchmod(descriptor, 0o600)
+        return descriptor
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
 
 
 def _atomic_json(path: Path, payload: object) -> bool:

@@ -19,7 +19,7 @@ from .doctor import DoctorReport, diagnose
 from .domain import ProcessingMode, TaskOptions, TaskResult
 from .engine import YouTubeTextEngine
 from .progress import ProgressEvent, discard_progress
-from .resume import CacheUsage, LocalResumeStore
+from .resume import CacheCleanup, CacheUsage, LocalResumeStore
 from .runtime import CapacityPlan, detect_host
 from .sources import COOKIE_BROWSERS, YtDlpAuth
 
@@ -278,9 +278,23 @@ def _run_doctor(*, json_output: bool) -> None:
 
 def _run_cache(arguments: tuple[str, ...], *, json_output: bool) -> None:
     normalized = tuple(argument.casefold() for argument in arguments)
-    if normalized not in {(), ("status",)}:
-        raise click.UsageError("use 'youtubetext cache' or 'youtubetext cache status'")
-    usage = LocalResumeStore().usage()
+    if normalized not in {(), ("status",), ("clear-incomplete",)}:
+        raise click.UsageError(
+            "use 'youtubetext cache', 'youtubetext cache status', or "
+            "'youtubetext cache clear-incomplete'"
+        )
+    store = LocalResumeStore()
+    if normalized == ("clear-incomplete",):
+        cleanup = store.clear_incomplete()
+        if json_output:
+            click.echo(json.dumps(cleanup.as_dict(), ensure_ascii=False))
+        else:
+            _render_cache_cleanup(cleanup, Console(highlight=False))
+        if cleanup.failed_tasks:
+            raise click.exceptions.Exit(1)
+        return
+
+    usage = store.usage()
     if json_output:
         click.echo(json.dumps(usage.as_dict(), ensure_ascii=False))
         return
@@ -339,6 +353,18 @@ def _render_cache_usage(usage: CacheUsage, console: Console) -> None:
         f"Incomplete tasks: {usage.task_count} ({_format_bytes(usage.task_bytes)})"
     )
     console.print(f"Total: {_format_bytes(usage.total_bytes)}")
+
+
+def _render_cache_cleanup(cleanup: CacheCleanup, console: Console) -> None:
+    console.print("[bold]YouTubeText cache cleanup[/bold]")
+    console.print(f"Location: {cleanup.root}")
+    console.print(
+        "Removed incomplete tasks: "
+        f"{cleanup.removed_tasks} ({_format_bytes(cleanup.removed_bytes)})"
+    )
+    console.print(f"Skipped active tasks: {cleanup.active_tasks}")
+    console.print(f"Failed removals: {cleanup.failed_tasks}")
+    console.print("Completed transcripts were not changed.")
 
 
 def _format_bytes(value: int) -> str:

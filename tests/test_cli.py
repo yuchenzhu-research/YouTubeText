@@ -22,7 +22,7 @@ from youtubetext.domain import (
     TranscriptSegment,
 )
 from youtubetext.progress import ProgressEvent, Stage
-from youtubetext.resume import CacheUsage, LocalResumeStore
+from youtubetext.resume import CacheCleanup, CacheUsage, LocalResumeStore
 from youtubetext.runtime import HostProfile
 
 URL_1 = "https://youtu.be/first"
@@ -484,6 +484,55 @@ def test_cache_command_rejects_unknown_actions():
 
     assert result.exit_code == 2
     assert "cache status" in result.output
+
+
+def test_cache_clear_incomplete_reports_removed_and_active_tasks(
+    monkeypatch,
+    tmp_path,
+):
+    cleanup = CacheCleanup(
+        root=tmp_path / "cache",
+        removed_tasks=2,
+        removed_bytes=3 * 1024,
+        active_tasks=1,
+    )
+
+    class FakeStore:
+        def clear_incomplete(self):
+            return cleanup
+
+    monkeypatch.setattr(cli, "LocalResumeStore", FakeStore)
+
+    result = CliRunner().invoke(cli.main, ["cache", "clear-incomplete"])
+
+    assert result.exit_code == 0, result.output
+    assert "Removed incomplete tasks: 2 (3.0 KiB)" in result.output
+    assert "Skipped active tasks: 1" in result.output
+    assert "Completed transcripts were not changed" in result.output
+
+
+def test_cache_clear_incomplete_json_exits_nonzero_on_failed_removal(
+    monkeypatch,
+    tmp_path,
+):
+    cleanup = CacheCleanup(
+        root=tmp_path / "cache",
+        failed_tasks=1,
+    )
+
+    class FakeStore:
+        def clear_incomplete(self):
+            return cleanup
+
+    monkeypatch.setattr(cli, "LocalResumeStore", FakeStore)
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["cache", "clear-incomplete", "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == cleanup.as_dict()
 
 
 def test_invalid_jobs_is_rejected_before_runtime(monkeypatch):
