@@ -102,6 +102,63 @@ def test_faster_whisper_prefers_cuda_and_falls_back_to_cpu(tmp_path: Path) -> No
     assert backend.runtime == ("cpu", "int8")
 
 
+def test_faster_whisper_retries_cuda_generator_failure_on_cpu(tmp_path: Path) -> None:
+    audio = tmp_path / "speech.wav"
+    audio.touch()
+    cpu_model = FakeModel()
+    attempts: list[tuple[str, str]] = []
+
+    class FailingCudaModel:
+        def transcribe(self, _path: str, **_options: Any):
+            def segments():
+                yield FakeSegment(0, 1, "discarded partial CUDA segment")
+                raise RuntimeError("cuDNN failed during CUDA inference")
+
+            return segments(), FakeInfo()
+
+    def factory(_name: str, device: str, compute_type: str, _cache: Path):
+        attempts.append((device, compute_type))
+        return FailingCudaModel() if device == "cuda" else cpu_model
+
+    backend = FasterWhisperASR(
+        "small",
+        model_factory=factory,
+        cuda_probe=lambda: True,
+    )
+
+    result = backend.transcribe(audio)
+
+    assert result.text == "第一 句\n第二句"
+    assert "discarded partial" not in result.text
+    assert attempts == [("cuda", "float16"), ("cpu", "int8")]
+    assert backend.runtime == ("cpu", "int8")
+
+
+def test_faster_whisper_does_not_mask_non_cuda_runtime_errors(tmp_path: Path) -> None:
+    audio = tmp_path / "broken.wav"
+    audio.touch()
+    attempts: list[str] = []
+
+    class BrokenMediaModel:
+        def transcribe(self, _path: str, **_options: Any):
+            raise RuntimeError("invalid audio stream")
+
+    def factory(_name: str, device: str, _compute_type: str, _cache: Path):
+        attempts.append(device)
+        return BrokenMediaModel()
+
+    backend = FasterWhisperASR(
+        "small",
+        model_factory=factory,
+        cuda_probe=lambda: True,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid audio stream"):
+        backend.transcribe(audio)
+    assert attempts == ["cuda"]
+    assert backend.runtime == ("cuda", "float16")
+
+
 @pytest.mark.parametrize(
     ("language", "expected"),
     (("auto", None), ("en-US", "en"), ("zh_Hant", "zh"), ("es", "es")),

@@ -84,15 +84,26 @@ class FasterWhisperASR:
         engine_language = _whisper_language_code(language)
         with self._inference_lock:
             model = self._get_model()
-            raw_segments, info = model.transcribe(
-                str(path),
-                language=engine_language,
-                condition_on_previous_text=False,
-                vad_filter=True,
-                word_timestamps=False,
-            )
-            segments = _normalize_segments(raw_segments)
-            detected_language = " ".join(str(getattr(info, "language", "") or "").split())
+            try:
+                segments, detected_language = _transcribe_once(
+                    model,
+                    path,
+                    engine_language,
+                )
+            except RuntimeError as cuda_error:
+                if self._runtime != ("cuda", "float16") or not _is_cuda_error(
+                    cuda_error
+                ):
+                    raise
+                model = self._replace_with_cpu(cuda_error)
+                try:
+                    segments, detected_language = _transcribe_once(
+                        model,
+                        path,
+                        engine_language,
+                    )
+                except Exception as cpu_error:
+                    raise cpu_error from cuda_error
 
         if not segments:
             raise RuntimeError("faster-whisper returned no recognizable speech")
@@ -139,6 +150,21 @@ class FasterWhisperASR:
             self._runtime = (device, compute_type)
             return model
 
+    def _replace_with_cpu(self, cuda_error: Exception) -> _WhisperModel:
+        with self._model_lock:
+            try:
+                model = self._model_factory(
+                    self.model_name,
+                    "cpu",
+                    "int8",
+                    self.cache_root,
+                )
+            except Exception as cpu_error:
+                raise cpu_error from cuda_error
+            self._model = model
+            self._runtime = ("cpu", "int8")
+            return model
+
 
 def _load_model(
     model_name: str,
@@ -174,6 +200,43 @@ def _whisper_language_code(language: str | None) -> str | None:
     if not normalized or normalized == "auto":
         return None
     return normalized.split("-", 1)[0]
+
+
+def _transcribe_once(
+    model: _WhisperModel,
+    path: Path,
+    language: str | None,
+) -> tuple[tuple[TranscriptSegment, ...], str]:
+    raw_segments, info = model.transcribe(
+        str(path),
+        language=language,
+        condition_on_previous_text=False,
+        vad_filter=True,
+        word_timestamps=False,
+    )
+    segments = _normalize_segments(raw_segments)
+    detected_language = " ".join(
+        str(getattr(info, "language", "") or "").split()
+    )
+    return segments, detected_language
+
+
+def _is_cuda_error(error: BaseException) -> bool:
+    detail = " ".join(str(error).casefold().split())
+    return any(
+        marker in detail
+        for marker in (
+            "cuda",
+            "cudnn",
+            "cublas",
+            "cudart",
+            "nvrtc",
+            "nvidia",
+            "float16",
+            "gpu",
+            "out of memory",
+        )
+    )
 
 
 def _normalize_segments(
