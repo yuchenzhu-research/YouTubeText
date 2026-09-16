@@ -70,8 +70,17 @@ if ($null -ne (Get-Command "uv" -ErrorAction SilentlyContinue)) {
 $env:YOUTUBETEXT_PYTHON = $python
 
 $installer = Join-Path $scriptDirectory "install.ps1"
-$output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer 2>&1
-if ($LASTEXITCODE -ne 0) {
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    # Windows PowerShell 5.1 represents native stderr as error records even
+    # when the child succeeds; collect it without aborting before exit checks.
+    $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer 2>&1
+    $installerExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousErrorAction
+}
+if ($installerExit -ne 0) {
     throw "Windows fallback installer failed: $($output -join [Environment]::NewLine)"
 }
 if (($output -join "`n") -notmatch "uv was not found; using Python's built-in venv and pip") {
