@@ -16,6 +16,20 @@ class SubtitleKind(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class SubtitleAvailability:
+    """A platform subtitle track that can be fetched later."""
+
+    language: str
+    kind: SubtitleKind
+
+    def __post_init__(self) -> None:
+        language = str(self.language or "").strip()
+        if not language:
+            raise ValueError("subtitle language must not be empty")
+        object.__setattr__(self, "language", language)
+
+
+@dataclass(frozen=True, slots=True)
 class SubtitleTrack:
     """A selected and cleaned platform subtitle track."""
 
@@ -43,6 +57,14 @@ class SourceResult:
     metadata: SourceMetadata
     subtitle: SubtitleTrack | None = None
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SourceInspection:
+    """Normalized metadata and the best platform subtitle candidate."""
+
+    metadata: SourceMetadata
+    subtitle: SubtitleAvailability | None = None
 
 
 class SourceError(RuntimeError):

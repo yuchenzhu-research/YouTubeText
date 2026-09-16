@@ -13,7 +13,14 @@ from youtubetext.domain import SourceMetadata
 
 from ._adapter import PlatformAdapter, resolve_adapter, run_with_platform_retries
 from ._yt_dlp import QUIET_YT_DLP_LOGGER, YtDlpAuth
-from .models import SourceFetchError, SourceResult, SubtitleKind, SubtitleTrack
+from .models import (
+    SourceFetchError,
+    SourceInspection,
+    SourceResult,
+    SubtitleAvailability,
+    SubtitleKind,
+    SubtitleTrack,
+)
 from .subtitles import parse_subtitle
 
 
@@ -54,11 +61,13 @@ class YtDlpRunner:
 class SourceClient:
     """Acquire one YouTube/Bilibili source through a single stable interface.
 
-    ``fetch`` performs no audio or video download. It inspects metadata and, if
-    the platform advertises captions, downloads only the selected subtitle.
-    ``None`` is a normal subtitle result and means the caller should use OCR or
-    ASR. Recognized sources that fail inspection/download/parsing raise
-    :class:`SourceFetchError` instead of being mistaken for caption absence.
+    ``inspect`` reads metadata and selects a caption candidate without
+    downloading files. ``fetch`` uses the same inspection path and, if the
+    platform advertises captions, downloads only the selected subtitle. Neither
+    method downloads audio or video. ``None`` is a normal subtitle result and
+    means the caller should use OCR or ASR. Recognized sources that fail
+    inspection/download/parsing raise :class:`SourceFetchError` instead of
+    being mistaken for caption absence.
     """
 
     def __init__(
@@ -72,6 +81,21 @@ class SourceClient:
         self._auth = auth or YtDlpAuth()
         self._sleeper = sleeper
 
+    def inspect(
+        self,
+        url: str,
+        *,
+        preferred_languages: Sequence[str] = (),
+    ) -> SourceInspection:
+        """Inspect metadata and caption availability without downloading files."""
+
+        inspection, _adapter, _request_url = self._inspect(
+            url,
+            preferred_languages=preferred_languages,
+            include_subtitles=True,
+        )
+        return inspection
+
     def fetch(
         self,
         url: str,
@@ -80,6 +104,38 @@ class SourceClient:
         include_subtitles: bool = True,
         strict_subtitles: bool = True,
     ) -> SourceResult:
+        inspection, adapter, request_url = self._inspect(
+            url,
+            preferred_languages=preferred_languages,
+            include_subtitles=include_subtitles,
+        )
+        selected = inspection.subtitle
+        if selected is None:
+            return SourceResult(metadata=inspection.metadata)
+
+        try:
+            subtitle = self._download_subtitle(
+                request_url,
+                adapter,
+                selected.language,
+                selected.kind,
+            )
+        except SourceFetchError as exc:
+            if strict_subtitles:
+                raise
+            return SourceResult(
+                metadata=inspection.metadata,
+                warnings=(f"Platform captions could not be used: {exc}",),
+            )
+        return SourceResult(metadata=inspection.metadata, subtitle=subtitle)
+
+    def _inspect(
+        self,
+        url: str,
+        *,
+        preferred_languages: Sequence[str],
+        include_subtitles: bool,
+    ) -> tuple[SourceInspection, PlatformAdapter, str]:
         adapter = resolve_adapter(url)
         request_url = adapter.request_url(url)
         try:
@@ -110,20 +166,12 @@ class SourceClient:
             )
         except Exception as exc:
             raise SourceFetchError("metadata", str(exc) or type(exc).__name__) from exc
-        if selected is None:
-            return SourceResult(metadata=metadata)
-
-        language, kind = selected
-        try:
-            subtitle = self._download_subtitle(request_url, adapter, language, kind)
-        except SourceFetchError as exc:
-            if strict_subtitles:
-                raise
-            return SourceResult(
-                metadata=metadata,
-                warnings=(f"Platform captions could not be used: {exc}",),
-            )
-        return SourceResult(metadata=metadata, subtitle=subtitle)
+        subtitle = (
+            SubtitleAvailability(language=selected[0], kind=selected[1])
+            if selected is not None
+            else None
+        )
+        return SourceInspection(metadata=metadata, subtitle=subtitle), adapter, request_url
 
     def _download_subtitle(
         self,

@@ -289,6 +289,78 @@ def test_metadata_only_mode_never_downloads_an_advertised_caption():
     assert runner.calls[0][2] is False
 
 
+def test_inspect_reports_selected_manual_caption_without_downloading():
+    runner = FakeRunner(
+        youtube_info(
+            subtitles={"fr": [{"ext": "vtt"}], "en": [{"ext": "vtt"}]},
+            automatic_captions={"zh-Hant": [{"ext": "vtt"}]},
+        ),
+        subtitle=VTT,
+    )
+
+    inspection = SourceClient(runner).inspect("https://youtu.be/abc123")
+
+    assert inspection.metadata.source_id == "abc123"
+    assert inspection.subtitle is not None
+    assert inspection.subtitle.language == "en"
+    assert inspection.subtitle.kind is SubtitleKind.MANUAL
+    assert len(runner.calls) == 1
+    assert runner.calls[0][2] is False
+
+
+def test_inspect_reports_selected_automatic_caption_without_downloading():
+    runner = FakeRunner(
+        youtube_info(automatic_captions={"zh-Hant": [{"ext": "vtt"}]}),
+        subtitle=VTT,
+    )
+
+    inspection = SourceClient(runner).inspect("https://youtu.be/abc123")
+
+    assert inspection.subtitle is not None
+    assert inspection.subtitle.language == "zh-Hant"
+    assert inspection.subtitle.kind is SubtitleKind.AUTOMATIC
+    assert len(runner.calls) == 1
+    assert runner.calls[0][2] is False
+
+
+def test_inspect_uses_the_same_preferred_language_selection_as_fetch():
+    info = youtube_info(
+        subtitles={"en": [{"ext": "vtt"}]},
+        automatic_captions={"es-ES": [{"ext": "vtt"}]},
+    )
+    inspect_runner = FakeRunner(info, subtitle=VTT)
+    fetch_runner = FakeRunner(info, subtitle=VTT)
+
+    inspection = SourceClient(inspect_runner).inspect(
+        "https://youtu.be/abc123",
+        preferred_languages=("es", "en"),
+    )
+    result = SourceClient(fetch_runner).fetch(
+        "https://youtu.be/abc123",
+        preferred_languages=("es", "en"),
+    )
+
+    assert inspection.subtitle is not None
+    assert result.subtitle is not None
+    assert (inspection.subtitle.language, inspection.subtitle.kind) == (
+        result.subtitle.language,
+        result.subtitle.kind,
+    )
+    assert len(inspect_runner.calls) == 1
+    assert inspect_runner.calls[0][2] is False
+
+
+def test_inspect_reports_no_caption_without_downloading():
+    runner = FakeRunner(youtube_info())
+
+    inspection = SourceClient(runner).inspect("https://youtu.be/abc123")
+
+    assert inspection.metadata.title == "A video"
+    assert inspection.subtitle is None
+    assert len(runner.calls) == 1
+    assert runner.calls[0][2] is False
+
+
 def test_manual_captions_are_selected_and_cleaned():
     rolling_vtt = """WEBVTT
 
