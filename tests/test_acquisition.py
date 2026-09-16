@@ -13,6 +13,7 @@ from youtubetext.acquisition import (
     merge_ocr_and_asr,
 )
 from youtubetext.asr import ASRResult
+from youtubetext.cache import TranscriptCache
 from youtubetext.domain import (
     ProcessingMode,
     SourceMetadata,
@@ -22,6 +23,7 @@ from youtubetext.domain import (
 )
 from youtubetext.media import MediaPurpose, SampledFrame
 from youtubetext.ocr import BoundingBox, OCRFrame, OCRObservation
+from youtubetext.progress import Stage
 from youtubetext.runtime import CapacityPlan, HostProfile, ResourceGates
 from youtubetext.sources import SourceResult, SubtitleKind, SubtitleTrack
 
@@ -36,6 +38,7 @@ class FakeSources:
         self.warnings = tuple(warnings)
         self.languages = ()
         self.include_subtitles = None
+        self.calls = 0
 
     def fetch(
         self,
@@ -45,6 +48,7 @@ class FakeSources:
         include_subtitles=True,
         strict_subtitles=True,
     ):
+        self.calls += 1
         self.languages = tuple(preferred_languages)
         self.include_subtitles = include_subtitles
         return SourceResult(META, self.subtitle, self.warnings)
@@ -119,7 +123,14 @@ async def no_progress(_event):
     return None
 
 
-def pipeline(tmp_path, *, subtitle=None, source_warnings=(), ocr_texts=()):
+def pipeline(
+    tmp_path,
+    *,
+    subtitle=None,
+    source_warnings=(),
+    ocr_texts=(),
+    cache=None,
+):
     sources = FakeSources(subtitle, source_warnings)
     media = FakeMedia()
     ocr = FakeOCR(ocr_texts)
@@ -130,10 +141,103 @@ def pipeline(tmp_path, *, subtitle=None, source_warnings=(), ocr_texts=()):
         frames=FakeFrames(),
         ocr=ocr,
         asr_factory=lambda _model: asr,
+        cache=cache,
         temp_root=tmp_path,
         ocr_batch_size=2,
     )
     return instance, sources, media, ocr, asr
+
+
+@pytest.mark.asyncio
+async def test_resume_rechecks_platform_then_skips_completed_local_work(tmp_path):
+    cache = TranscriptCache(tmp_path / "cache")
+    options = TaskOptions(language="zh-Hant")
+    texts = (
+        "国际局势正在发生一系列深刻变化",
+        "美联储政策仍然牵动全球资本市场",
+        "欧洲各国面对新的安全经济压力",
+        "北京近期释放出若干重要政策信号",
+        "投资者需要区分短期波动长期趋势",
+        "下面我们继续观察事件如何演化",
+    )
+    first, *_ = pipeline(tmp_path / "first", ocr_texts=texts, cache=cache)
+    expected = await first.acquire(URL, options, gates(), no_progress)
+
+    second, sources, media, _ocr, asr = pipeline(tmp_path / "second", cache=cache)
+    events = []
+
+    async def collect(event):
+        events.append(event.stage)
+
+    actual = await second.acquire(URL, options, gates(), collect)
+
+    assert actual == expected
+    assert sources.calls == 1
+    assert media.purposes == []
+    assert asr.calls == []
+    assert Stage.CACHE in events
+
+
+@pytest.mark.asyncio
+async def test_new_platform_caption_wins_over_cached_fallback(tmp_path):
+    cache = TranscriptCache(tmp_path / "cache")
+    options = TaskOptions(mode=ProcessingMode.AUTO)
+    texts = (
+        "国际局势正在发生一系列深刻变化",
+        "美联储政策仍然牵动全球资本市场",
+        "欧洲各国面对新的安全经济压力",
+        "北京近期释放出若干重要政策信号",
+        "投资者需要区分短期波动长期趋势",
+        "下面我们继续观察事件如何演化",
+    )
+    first, *_ = pipeline(tmp_path / "first", ocr_texts=texts, cache=cache)
+    await first.acquire(URL, options, gates(), no_progress)
+    track = SubtitleTrack(
+        "en",
+        SubtitleKind.MANUAL,
+        (TranscriptSegment(0, 2, "New platform caption"),),
+    )
+    second, _sources, media, _ocr, asr = pipeline(
+        tmp_path / "second",
+        subtitle=track,
+        cache=cache,
+    )
+
+    result = await second.acquire(URL, options, gates(), no_progress)
+
+    assert result.method is TranscriptMethod.PLATFORM_CAPTIONS
+    assert result.text == "New platform caption"
+    assert media.purposes == []
+    assert asr.calls == []
+
+
+@pytest.mark.asyncio
+async def test_cache_failures_never_break_normal_transcript_acquisition(tmp_path):
+    class BrokenCache:
+        def load(self, _metadata, _options):
+            raise OSError("cache unavailable")
+
+        def save(self, _transcript, _options):
+            raise OSError("cache unavailable")
+
+    texts = (
+        "国际局势正在发生一系列深刻变化",
+        "美联储政策仍然牵动全球资本市场",
+        "欧洲各国面对新的安全经济压力",
+        "北京近期释放出若干重要政策信号",
+        "投资者需要区分短期波动长期趋势",
+        "下面我们继续观察事件如何演化",
+    )
+    instance, *_ = pipeline(
+        tmp_path,
+        ocr_texts=texts,
+        cache=BrokenCache(),
+    )
+
+    result = await instance.acquire(URL, TaskOptions(), gates(), no_progress)
+
+    assert result.method is TranscriptMethod.APPLE_VISION_OCR
+    assert "could not be saved" in result.warnings[-1]
 
 
 @pytest.mark.asyncio

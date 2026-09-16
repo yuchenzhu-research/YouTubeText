@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,18 @@ class YtDlpAuth:
                 "cookiefile": io.StringIO(self.cookie_file.read_text(encoding="utf-8"))
             }
         return {}
+
+    def cache_scope(self) -> str:
+        """Return a cache partition identity without exposing credentials."""
+
+        if self.browser:
+            raise ValueError(
+                "browser cookies do not provide a stable account identity for resume"
+            )
+        if self.cookie_file is not None:
+            digest = hashlib.sha256(self.cookie_file.read_bytes()).hexdigest()
+            return f"cookie-file:{digest}"
+        return "anonymous"
 
 
 class QuietYtDlpLogger:

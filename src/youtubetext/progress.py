@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 
 
 class Stage(str, Enum):
+    CACHE = "cache"
     IDENTIFY = "identify"
     METADATA = "metadata"
     CAPTIONS = "captions"

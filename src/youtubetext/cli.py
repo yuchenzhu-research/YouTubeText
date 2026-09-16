@@ -15,6 +15,7 @@ from rich.console import Console
 from . import __version__
 from ._supervisor import RUN_TEMP_ENV, SUPERVISED_ENV, run_supervised
 from .acquisition import TranscriptPipeline
+from .cache import TranscriptCache
 from .doctor import DoctorReport, diagnose
 from .domain import ProcessingMode, TaskOptions, TaskResult
 from .engine import YouTubeTextEngine
@@ -112,6 +113,11 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     ),
     help="Use a Netscape-format cookies file.",
 )
+@click.option(
+    "--resume",
+    is_flag=True,
+    help="Reuse a compatible completed transcript from the local cache.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Write machine-readable JSON.")
 @click.option(
     "--doctor",
@@ -131,6 +137,7 @@ def main(
     jobs: int,
     cookies_from_browser: str | None,
     cookies_file: Path | None,
+    resume: bool,
     json_output: bool,
     doctor_mode: bool,
 ) -> None:
@@ -150,6 +157,12 @@ def main(
         raise click.UsageError(
             "choose either --cookies-from-browser or --cookies-file, not both"
         )
+    if resume and cookies_from_browser:
+        raise click.UsageError(
+            "--resume cannot be combined with --cookies-from-browser because "
+            "browser account changes cannot be safely isolated; use --cookies-file "
+            "or run without --resume"
+        )
 
     try:
         plan = CapacityPlan.for_host(detect_host(), requested_jobs=jobs)
@@ -166,7 +179,7 @@ def main(
             if cookies_from_browser or cookies_file is not None
             else None
         )
-        engine = YouTubeTextEngine(_transcript_pipeline(auth), plan)
+        engine = YouTubeTextEngine(_transcript_pipeline(auth, resume=resume), plan)
         console = Console(stderr=True, highlight=False)
         progress = discard_progress if json_output else _progress_sink(console)
         results = asyncio.run(engine.process(list(urls), options, progress=progress))
@@ -218,13 +231,20 @@ def requires_supervised_worker(arguments: tuple[str, ...]) -> bool:
     return bool(urls) and not doctor_mode and not doctor_command
 
 
-def _transcript_pipeline(auth: YtDlpAuth | None = None) -> TranscriptPipeline:
+def _transcript_pipeline(
+    auth: YtDlpAuth | None = None,
+    *,
+    resume: bool = False,
+) -> TranscriptPipeline:
     run_root = os.environ.get(RUN_TEMP_ENV, "").strip()
     options: dict[str, object] = {}
     if run_root:
         options["temp_root"] = Path(run_root)
     if auth is not None:
         options["auth"] = auth
+    if resume:
+        scope = auth.cache_scope() if auth is not None else "anonymous"
+        options["cache"] = TranscriptCache(auth_scope=scope)
     return TranscriptPipeline(**options)
 
 
@@ -297,6 +317,7 @@ def _result_payload(result: TaskResult) -> dict[str, Any]:
                 "platform": result.transcript.metadata.platform,
                 "language": result.transcript.language,
                 "method": result.transcript.method.value,
+                "warnings": list(result.transcript.warnings),
             }
         )
     if result.output is not None:

@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 import youtubetext.cli as cli
 from youtubetext._supervisor import RUN_TEMP_ENV
+from youtubetext.cache import TranscriptCache
 from youtubetext.doctor import CachedModelStatus, DiagnosticCheck, DoctorReport
 from youtubetext.domain import (
     OutputFiles,
@@ -89,6 +90,7 @@ def test_help_and_version_do_not_require_a_url():
     assert "YouTube or Bilibili" in help_result.output
     assert "--cookies-from-browser" in help_result.output
     assert "--cookies-file" in help_result.output
+    assert "--resume" in help_result.output
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
     assert "0.1.0" in version_result.output
@@ -290,6 +292,23 @@ def test_cookie_file_path_and_contents_are_not_exposed(monkeypatch, tmp_path):
     assert "unique-secret-cookie-value" not in result.output
 
 
+def test_resume_adds_a_private_transcript_cache_to_the_pipeline(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def pipeline_factory(**options):
+        captured.update(options)
+        return object()
+
+    install_fake_runtime(monkeypatch, [successful_result(URL_1, tmp_path)])
+    monkeypatch.setattr(cli, "TranscriptPipeline", pipeline_factory)
+
+    result = CliRunner().invoke(cli.main, [URL_1, "--resume", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["cache"], TranscriptCache)
+    assert "transcripts" not in result.output
+
+
 def test_cookie_sources_are_mutually_exclusive(monkeypatch, tmp_path):
     cookie_file = tmp_path / "cookies.txt"
     cookie_file.write_text("cookies", encoding="utf-8")
@@ -312,6 +331,22 @@ def test_cookie_sources_are_mutually_exclusive(monkeypatch, tmp_path):
 
     assert result.exit_code == 2
     assert "either --cookies-from-browser or --cookies-file" in result.output
+
+
+def test_browser_cookie_resume_is_rejected_before_runtime(monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "detect_host",
+        lambda: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+
+    result = CliRunner().invoke(
+        cli.main,
+        [URL_1, "--cookies-from-browser", "safari", "--resume"],
+    )
+
+    assert result.exit_code == 2
+    assert "browser account changes cannot be safely isolated" in result.output
 
 
 def test_partial_failure_preserves_order_and_exits_nonzero(monkeypatch, tmp_path):
@@ -346,6 +381,7 @@ def test_json_output_is_ordered_and_contains_no_progress(monkeypatch, tmp_path):
     assert payload["success"] is False
     assert [item["url"] for item in payload["results"]] == [URL_1, URL_2]
     assert payload["results"][0]["title"] == "第一条"
+    assert payload["results"][0]["warnings"] == []
     assert payload["results"][0]["output"]["clean_markdown"].endswith(
         "transcript-clean.md"
     )
