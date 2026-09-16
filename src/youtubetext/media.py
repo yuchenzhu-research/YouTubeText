@@ -6,7 +6,6 @@ construction stay behind that small interface.
 """
 from __future__ import annotations
 
-import asyncio
 import shutil
 import subprocess
 import time
@@ -15,8 +14,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping
 
+from .runtime import run_blocking
 from .sources._adapter import resolve_adapter, run_with_platform_retries
 from .sources._yt_dlp import QUIET_YT_DLP_LOGGER, YtDlpAuth
+
+FRAME_SAMPLING_REVISION = "bottom45-fps-bounded-jpegq3-v1"
 
 
 class MediaPurpose(str, Enum):
@@ -134,19 +136,9 @@ class MediaDownloader:
         return candidates[0].resolve()
 
     async def download(self, url: str, directory: Path, purpose: MediaPurpose) -> Path:
-        worker = asyncio.create_task(
-            asyncio.to_thread(self._download_sync, url, directory, purpose)
-        )
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # asyncio cannot stop a running thread. Wait for yt-dlp to leave the
-            # stable output/.part files before a resume lock may be released.
-            try:
-                await worker
-            except Exception:
-                pass
-            raise
+        # asyncio cannot stop a running thread. Wait for yt-dlp to leave stable
+        # output/.part files before a resume lock may be released.
+        return await run_blocking(self._download_sync, url, directory, purpose)
 
 
 class FrameSampler:
@@ -213,7 +205,7 @@ class FrameSampler:
         output_dir: Path,
         duration_seconds: float,
     ) -> tuple[SampledFrame, ...]:
-        return await asyncio.to_thread(
+        return await run_blocking(
             self._sample_sync,
             Path(video_path),
             Path(output_dir),

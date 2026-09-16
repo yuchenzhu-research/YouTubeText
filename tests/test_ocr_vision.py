@@ -102,6 +102,23 @@ def test_empty_batch_does_not_require_a_binary() -> None:
     assert MacVisionOCR("/does/not/exist").recognize_images([]) == ()
 
 
+def test_checkpoint_revision_changes_with_helper_contents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("youtubetext.ocr.vision.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("youtubetext.ocr.vision.platform.mac_ver", lambda: ("15.0", (), ""))
+    monkeypatch.setattr("youtubetext.ocr.vision.platform.release", lambda: "24.0.0")
+    helper = make_executable(tmp_path / "vision-helper", "#!/bin/sh\nexit 0\n")
+    first = MacVisionOCR(helper).checkpoint_revision
+
+    helper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+    second = MacVisionOCR(helper).checkpoint_revision
+
+    assert first != second
+
+
 def test_request_options_are_validated(tmp_path: Path) -> None:
     image = tmp_path / "frame.jpg"
     image.write_bytes(b"placeholder")

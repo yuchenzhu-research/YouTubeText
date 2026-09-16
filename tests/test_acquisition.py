@@ -101,6 +101,39 @@ class FakeOCR:
         return tuple(result)
 
 
+class BatchOCR:
+    def __init__(self, *, fail_on_call: int | None = None):
+        self.fail_on_call = fail_on_call
+        self.calls: list[tuple[str, ...]] = []
+
+    async def recognize_images_async(self, image_paths, **_options):
+        names = tuple(Path(path).stem for path in image_paths)
+        self.calls.append(names)
+        if self.fail_on_call == len(self.calls):
+            raise RuntimeError("simulated OCR batch interruption")
+        texts = (
+            "国际局势正在发生一系列深刻变化",
+            "美联储政策仍然牵动全球资本市场",
+            "欧洲各国面对新的安全经济压力",
+            "北京近期释放出若干重要政策信号",
+            "投资者需要区分短期波动长期趋势",
+            "下面我们继续观察事件如何演化",
+        )
+        return tuple(
+            OCRFrame(
+                str(path),
+                (
+                    OCRObservation(
+                        texts[int(Path(path).stem) % len(texts)],
+                        0.95,
+                        BoundingBox(0.1, 0.2, 0.8, 0.08),
+                    ),
+                ),
+            )
+            for path in image_paths
+        )
+
+
 class FakeASR:
     def __init__(self):
         self.calls = []
@@ -129,11 +162,12 @@ def pipeline(
     subtitle=None,
     source_warnings=(),
     ocr_texts=(),
+    ocr_provider=None,
     resume_store=None,
 ):
     sources = FakeSources(subtitle, source_warnings)
     media = FakeMedia()
-    ocr = FakeOCR(ocr_texts)
+    ocr = ocr_provider or FakeOCR(ocr_texts)
     asr = FakeASR()
     instance = TranscriptPipeline(
         sources=sources,
@@ -263,6 +297,37 @@ async def test_new_platform_caption_removes_abandoned_resume_media(tmp_path):
     assert list(task_root.iterdir()) == []
     assert media.purposes == []
     assert asr.calls == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_resumes_only_unfinished_ocr_batches(tmp_path):
+    resume_root = tmp_path / "resume"
+    resume_store = LocalResumeStore(resume_root, lock_poll_seconds=0.001)
+    options = TaskOptions(mode=ProcessingMode.OCR, language="zh-Hant")
+    interrupted_ocr = BatchOCR(fail_on_call=2)
+    first, _sources, first_media, _ocr, _asr = pipeline(
+        tmp_path / "first-run",
+        ocr_provider=interrupted_ocr,
+        resume_store=resume_store,
+    )
+
+    with pytest.raises(TranscriptAcquisitionError, match="batch interruption"):
+        await first.acquire(URL, options, gates(), no_progress)
+
+    recovered_ocr = BatchOCR()
+    second, _sources, second_media, _ocr, _asr = pipeline(
+        tmp_path / "second-run",
+        ocr_provider=recovered_ocr,
+        resume_store=resume_store,
+    )
+    result = await second.acquire(URL, options, gates(), no_progress)
+
+    assert result.method is TranscriptMethod.APPLE_VISION_OCR
+    assert interrupted_ocr.calls == [("0", "1"), ("2", "3")]
+    assert recovered_ocr.calls == [("2", "3"), ("4", "5")]
+    assert first_media.purposes == [MediaPurpose.ANALYSIS_VIDEO]
+    assert second_media.purposes == []
+    assert list((resume_root / "tasks").iterdir()) == []
 
 
 @pytest.mark.asyncio

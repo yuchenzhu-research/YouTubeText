@@ -1,9 +1,10 @@
 import asyncio
+import threading
 
 import pytest
 
 from youtubetext.domain import TaskResult
-from youtubetext.runtime import CapacityPlan, HostProfile, TaskScheduler
+from youtubetext.runtime import CapacityPlan, HostProfile, TaskScheduler, run_blocking
 
 
 def host(memory_gib: int) -> HostProfile:
@@ -49,3 +50,31 @@ async def test_scheduler_preserves_order_and_isolates_failures():
     assert [result.url for result in results] == ["first", "bad", "third"]
     assert results[1].error == "broken"
     assert peak == 2
+
+
+@pytest.mark.asyncio
+async def test_blocking_thread_survives_repeated_cancellation_until_it_stops():
+    started = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+
+    def blocking_work() -> None:
+        started.set()
+        release.wait(timeout=2)
+        stopped.set()
+
+    task = asyncio.create_task(run_blocking(blocking_work))
+    assert await asyncio.to_thread(started.wait, 1)
+
+    task.cancel()
+    await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.01)
+
+    assert not task.done()
+    assert not stopped.is_set()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped.is_set()

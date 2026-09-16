@@ -23,14 +23,13 @@ from .media import FrameSampler, MediaDownloader, MediaPurpose, SampledFrame
 from .ocr import (
     MacVisionOCR,
     OCRFrame,
-    TimedOCRFrame,
     normalize_caption,
     subtitle_segments_from_frames,
     vision_language_codes,
 )
 from .progress import ProgressEvent, ProgressSink, Stage
-from .resume import EphemeralResumeStore, ResumeSession, ResumeStore
-from .runtime import ResourceGates
+from .resume import EphemeralResumeStore, OCRRecipe, ResumeSession, ResumeStore
+from .runtime import ResourceGates, run_blocking
 from .sources import SourceClient, SourceResult, YtDlpAuth
 
 
@@ -68,6 +67,9 @@ class FrameProvider(Protocol):
 
 
 class OCRProvider(Protocol):
+    @property
+    def checkpoint_revision(self) -> str: ...
+
     async def recognize_images_async(
         self,
         image_paths: Sequence[str | Path],
@@ -273,6 +275,7 @@ class TranscriptPipeline:
                     options,
                     gates,
                     progress,
+                    session,
                 )
         except asyncio.CancelledError:
             raise
@@ -374,10 +377,9 @@ class TranscriptPipeline:
         options: TaskOptions,
         gates: ResourceGates,
         progress: ProgressSink,
+        session: ResumeSession,
     ) -> tuple[tuple[TranscriptSegment, ...], tuple[str, ...]]:
         await progress(ProgressEvent(url, Stage.OCR, "Sampling subtitle frames"))
-        recognized: list[TimedOCRFrame] = []
-        failed_frames = 0
         async with gates.ocr:
             sampled = await self._frames.sample(
                 video_path,
@@ -387,27 +389,40 @@ class TranscriptPipeline:
             if not sampled:
                 return (), ()
             languages = _ocr_languages(options.language, metadata)
-            for start in range(0, len(sampled), self._ocr_batch_size):
-                batch = sampled[start : start + self._ocr_batch_size]
-                fraction = min(1.0, start / len(sampled))
+            engine_revision = await run_blocking(
+                _ocr_checkpoint_revision,
+                self._ocr,
+            )
+            recipe = OCRRecipe(
+                languages=languages,
+                batch_size=self._ocr_batch_size,
+                engine_revision=engine_revision,
+            )
+
+            async def report_batch(start: int, total: int) -> None:
+                fraction = min(1.0, start / total)
                 await progress(
                     ProgressEvent(url, Stage.OCR, "Recognizing burned-in captions", fraction)
                 )
-                frames = await self._ocr.recognize_images_async(
-                    [item.path for item in batch],
-                    languages=languages,
+
+            async def recognize_batch(
+                paths: Sequence[Path],
+                active_recipe: OCRRecipe,
+            ) -> tuple[OCRFrame, ...]:
+                return await self._ocr.recognize_images_async(
+                    paths,
+                    languages=active_recipe.languages,
+                    accurate=active_recipe.accurate,
+                    minimum_text_height=active_recipe.minimum_text_height,
                 )
-                if len(frames) != len(batch):
-                    raise TranscriptAcquisitionError(
-                        "Apple Vision OCR returned an unexpected frame count"
-                    )
-                failed_frames += sum(frame.error is not None for frame in frames)
-                recognized.extend(
-                    TimedOCRFrame(item.timestamp_seconds, frame)
-                    for item, frame in zip(batch, frames)
-                )
-                for item in batch:
-                    item.path.unlink(missing_ok=True)
+
+            recognized = await session.ocr(
+                sampled,
+                recipe,
+                recognize_batch,
+                report_batch,
+            )
+        failed_frames = sum(item.frame.error is not None for item in recognized)
         failure_ratio = failed_frames / len(sampled)
         if failure_ratio > 0.1:
             raise TranscriptAcquisitionError(
@@ -462,7 +477,7 @@ class TranscriptPipeline:
             self._asr_backends[model] = backend
         await progress(ProgressEvent(url, Stage.WHISPER, f"Transcribing with Whisper ({model})"))
         async with gates.asr:
-            result = await asyncio.to_thread(
+            result = await run_blocking(
                 backend.transcribe,
                 media_path,
                 language=_whisper_language(options.language),
@@ -484,6 +499,16 @@ def _whisper_language(language: str) -> str:
     if normalized == "auto":
         return "auto"
     return normalized.split("-", 1)[0]
+
+
+def _ocr_checkpoint_revision(provider: object) -> str:
+    revision = getattr(provider, "checkpoint_revision", "")
+    if callable(revision):
+        revision = revision()
+    if isinstance(revision, str) and revision.strip():
+        return revision.strip()
+    provider_type = type(provider)
+    return f"python-provider:{provider_type.__module__}.{provider_type.__qualname__}"
 
 
 def _ocr_languages(language: str, metadata: SourceMetadata) -> tuple[str, ...]:

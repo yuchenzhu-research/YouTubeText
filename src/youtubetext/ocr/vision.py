@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import json
 import math
 import os
@@ -14,10 +14,12 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..runtime import run_blocking
 from .types import BoundingBox, OCRFrame, OCRObservation
 
 VISION_OCR_ENV = "YOUTUBETEXT_VISION_OCR"
 VISION_OCR_EXECUTABLE = "youtubetext-vision-ocr"
+VISION_OCR_REVISION = "apple-vision-json-contract-v1"
 
 
 class OCRUnavailableError(RuntimeError):
@@ -205,6 +207,31 @@ class MacVisionOCR:
     def available(self) -> bool:
         return platform.system() == "Darwin" and self.binary_path is not None
 
+    @property
+    def checkpoint_revision(self) -> str:
+        """Fingerprint the helper and macOS Vision implementation used for OCR."""
+
+        binary = self.binary_path
+        binary_digest = "unavailable"
+        if binary is not None:
+            digest = hashlib.sha256()
+            try:
+                with binary.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        digest.update(chunk)
+                binary_digest = digest.hexdigest()
+            except OSError:
+                binary_digest = "unreadable"
+        signature = "|".join(
+            (
+                VISION_OCR_REVISION,
+                platform.mac_ver()[0],
+                platform.release(),
+                binary_digest,
+            )
+        )
+        return hashlib.sha256(signature.encode("utf-8")).hexdigest()
+
     def recognize_images(
         self,
         image_paths: Sequence[str | os.PathLike[str]],
@@ -281,7 +308,7 @@ class MacVisionOCR:
     ) -> tuple[OCRFrame, ...]:
         """Asynchronous wrapper for task-queue integrations."""
 
-        return await asyncio.to_thread(
+        return await run_blocking(
             self.recognize_images,
             image_paths,
             languages=languages,

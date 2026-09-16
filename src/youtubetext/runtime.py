@@ -6,11 +6,41 @@ import os
 import platform
 import subprocess
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Generic, Sequence, TypeVar
+from typing import Awaitable, Callable, ParamSpec, Sequence, TypeVar
 
 from .domain import TaskResult
 
 T = TypeVar("T")
+P = ParamSpec("P")
+
+
+async def run_blocking(
+    call: Callable[P, T],
+    /,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T:
+    """Run a thread call without letting cancellation outlive its side effects."""
+
+    worker = asyncio.create_task(asyncio.to_thread(call, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as cancelled:
+        # Repeated cancellation must not let callers release locks or remove
+        # inputs while the thread can still mutate them.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if worker.done():
+            try:
+                worker.result()
+            except BaseException:
+                pass
+        raise cancelled
 
 
 @dataclass(frozen=True, slots=True)

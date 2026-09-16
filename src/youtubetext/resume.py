@@ -4,24 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Protocol
 
 from platformdirs import user_cache_dir
 
 from .cache import TranscriptCache
 from .domain import SourceMetadata, TaskOptions, Transcript
-from .media import MediaPurpose
+from .media import FRAME_SAMPLING_REVISION, MediaPurpose, SampledFrame
+from .ocr import BoundingBox, OCRFrame, OCRObservation, TimedOCRFrame
+from .runtime import run_blocking
 
 MEDIA_REVISION = "yt-dlp-stable-part-v1"
-T = TypeVar("T")
+OCR_CHECKPOINT_SCHEMA = 1
+OCR_REVISION = "apple-vision-raw-observations-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,12 +36,58 @@ class ResumeResult:
     warning: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class OCRRecipe:
+    """All inputs that can change Apple Vision's raw observations."""
+
+    languages: tuple[str, ...]
+    batch_size: int = 32
+    sampling_revision: str = FRAME_SAMPLING_REVISION
+    engine_revision: str = "unspecified-ocr-engine-v1"
+    accurate: bool = True
+    minimum_text_height: float = 0.012
+
+    def __post_init__(self) -> None:
+        languages = tuple(
+            dict.fromkeys(language.strip() for language in self.languages if language.strip())
+        )
+        batch_size = int(self.batch_size)
+        sampling_revision = self.sampling_revision.strip()
+        engine_revision = self.engine_revision.strip()
+        minimum_text_height = float(self.minimum_text_height)
+        if batch_size < 1:
+            raise ValueError("OCR batch_size must be at least one")
+        if not sampling_revision:
+            raise ValueError("OCR sampling_revision must not be empty")
+        if not engine_revision:
+            raise ValueError("OCR engine_revision must not be empty")
+        if not math.isfinite(minimum_text_height) or not 0 <= minimum_text_height <= 1:
+            raise ValueError("OCR minimum_text_height must be between zero and one")
+        object.__setattr__(self, "languages", languages)
+        object.__setattr__(self, "batch_size", batch_size)
+        object.__setattr__(self, "sampling_revision", sampling_revision)
+        object.__setattr__(self, "engine_revision", engine_revision)
+        object.__setattr__(self, "accurate", bool(self.accurate))
+        object.__setattr__(self, "minimum_text_height", minimum_text_height)
+
+
 class ResumeSession(Protocol):
     async def media(
         self,
         purpose: MediaPurpose,
         produce: Callable[[Path], Awaitable[Path]],
     ) -> Path: ...
+
+    async def ocr(
+        self,
+        sampled_frames: Sequence[SampledFrame],
+        recipe: OCRRecipe,
+        recognize: Callable[
+            [Sequence[Path], OCRRecipe],
+            Awaitable[tuple[OCRFrame, ...]],
+        ],
+        progress: Callable[[int, int], Awaitable[None]],
+    ) -> tuple[TimedOCRFrame, ...]: ...
 
 
 class ResumeStore(Protocol):
@@ -142,9 +193,9 @@ class LocalResumeStore:
             )
 
         try:
-            cached = await _run_blocking(self._transcripts.load, metadata, options)
+            cached = await run_blocking(self._transcripts.load, metadata, options)
             if cached is not None:
-                cleanup_ok = await _run_blocking(_remove_tree, task_root)
+                cleanup_ok = await run_blocking(_remove_tree, task_root)
                 warning = (
                     "The completed transcript was reused, but stale temporary media "
                     "could not be removed."
@@ -155,7 +206,7 @@ class LocalResumeStore:
 
             session = _ResumeSession(task_root, persistent=True)
             transcript = await work(session)
-            saved = await _run_blocking(self._transcripts.save, transcript, options)
+            saved = await run_blocking(self._transcripts.save, transcript, options)
             if not saved:
                 return ResumeResult(
                     transcript,
@@ -165,7 +216,7 @@ class LocalResumeStore:
                     ),
                 )
 
-            cleanup_ok = await _run_blocking(_remove_tree, task_root)
+            cleanup_ok = await run_blocking(_remove_tree, task_root)
             warning = (
                 "The transcript was cached, but temporary media could not be removed."
                 if not cleanup_ok
@@ -189,7 +240,7 @@ class LocalResumeStore:
             return "Local resume temporary files could not be checked or removed."
 
         try:
-            cleanup_ok = await _run_blocking(_remove_tree, self._tasks / key)
+            cleanup_ok = await run_blocking(_remove_tree, self._tasks / key)
             return (
                 "Platform captions were used, but stale temporary media could not "
                 "be removed."
@@ -242,14 +293,15 @@ class _ResumeSession:
                 if not _remove_tree(media_directory):
                     raise RuntimeError("stale resume media could not be removed")
                 _ensure_private_directory(media_directory)
-            _atomic_json(
+            if not _atomic_json(
                 manifest,
                 {
                     "revision": MEDIA_REVISION,
                     "purpose": purpose.value,
                     "status": "downloading",
                 },
-            )
+            ):
+                raise RuntimeError("media resume state could not be saved")
 
         produced = Path(await produce(media_directory)).resolve()
         media_root = media_directory.resolve()
@@ -260,7 +312,7 @@ class _ResumeSession:
 
         if self._persistent:
             relative = produced.relative_to(media_root)
-            _atomic_json(
+            if not _atomic_json(
                 manifest,
                 {
                     "revision": MEDIA_REVISION,
@@ -269,8 +321,87 @@ class _ResumeSession:
                     "path": str(relative),
                     "size": produced.stat().st_size,
                 },
-            )
+            ):
+                raise RuntimeError("completed media resume state could not be saved")
         return produced
+
+    async def ocr(
+        self,
+        sampled_frames: Sequence[SampledFrame],
+        recipe: OCRRecipe,
+        recognize: Callable[
+            [Sequence[Path], OCRRecipe],
+            Awaitable[tuple[OCRFrame, ...]],
+        ],
+        progress: Callable[[int, int], Awaitable[None]],
+    ) -> tuple[TimedOCRFrame, ...]:
+        total = len(sampled_frames)
+        if not total:
+            return ()
+
+        checkpoint_root: Path | None = None
+        recipe_key = _ocr_recipe_key(recipe)
+        if self._persistent:
+            stages_root = self._root / "stages"
+            ocr_root = stages_root / "ocr"
+            _ensure_private_directory(stages_root)
+            _ensure_private_directory(ocr_root)
+            checkpoint_root = ocr_root / recipe_key
+            _ensure_private_directory(checkpoint_root)
+
+        recognized: list[TimedOCRFrame] = []
+        for start in range(0, total, recipe.batch_size):
+            batch = tuple(sampled_frames[start : start + recipe.batch_size])
+            await progress(start, total)
+            identities: tuple[dict[str, object], ...] = ()
+            checkpoint: Path | None = None
+            frames: tuple[OCRFrame, ...] | None = None
+
+            if checkpoint_root is not None:
+                identities = await run_blocking(_ocr_identities, batch, start)
+                batch_index = start // recipe.batch_size
+                checkpoint = checkpoint_root / f"batch-{batch_index:08d}.json"
+                frames = _load_ocr_checkpoint(
+                    checkpoint,
+                    recipe_key=recipe_key,
+                    batch_index=batch_index,
+                    identities=identities,
+                    sampled_frames=batch,
+                )
+
+            if frames is None:
+                frames = tuple(
+                    await recognize(tuple(item.path for item in batch), recipe)
+                )
+                if len(frames) != len(batch):
+                    raise RuntimeError("OCR recognizer returned an unexpected frame count")
+                frames = tuple(
+                    OCRFrame(
+                        path=str(item.path),
+                        observations=frame.observations,
+                        error=frame.error,
+                    )
+                    for item, frame in zip(batch, frames)
+                )
+                if checkpoint is not None and not any(frame.error for frame in frames):
+                    payload = _encode_ocr_checkpoint(
+                        recipe_key=recipe_key,
+                        batch_index=start // recipe.batch_size,
+                        identities=identities,
+                        frames=frames,
+                    )
+                    saved = await run_blocking(_atomic_json, checkpoint, payload)
+                    if not saved:
+                        raise RuntimeError("OCR resume checkpoint could not be saved")
+
+            recognized.extend(
+                TimedOCRFrame(item.timestamp_seconds, frame)
+                for item, frame in zip(batch, frames)
+            )
+            for item in batch:
+                item.path.unlink(missing_ok=True)
+
+        return tuple(recognized)
 
 
 def _load_media_manifest(
@@ -311,25 +442,183 @@ def _completed_media(
         return None
 
 
-async def _run_blocking(call: Callable[..., T], *args: object) -> T:
-    """Keep lock-protected file mutations alive until their worker thread stops."""
+def _ocr_recipe_key(recipe: OCRRecipe) -> str:
+    payload = {
+        "schema": OCR_CHECKPOINT_SCHEMA,
+        "revision": OCR_REVISION,
+        "sampling_revision": recipe.sampling_revision,
+        "engine_revision": recipe.engine_revision,
+        "languages": list(recipe.languages),
+        "batch_size": recipe.batch_size,
+        "accurate": recipe.accurate,
+        "minimum_text_height": recipe.minimum_text_height,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    worker = asyncio.create_task(asyncio.to_thread(call, *args))
+
+def _ocr_identities(
+    sampled_frames: Sequence[SampledFrame],
+    start: int,
+) -> tuple[dict[str, object], ...]:
+    identities: list[dict[str, object]] = []
+    for offset, sampled in enumerate(sampled_frames):
+        timestamp = float(sampled.timestamp_seconds)
+        if not math.isfinite(timestamp) or timestamp < 0:
+            raise ValueError("sampled frame timestamps must be finite and non-negative")
+        digest = hashlib.sha256()
+        with sampled.path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        identities.append(
+            {
+                "ordinal": start + offset,
+                "timestamp_seconds": timestamp,
+                "sha256": digest.hexdigest(),
+            }
+        )
+    return tuple(identities)
+
+
+def _encode_ocr_checkpoint(
+    *,
+    recipe_key: str,
+    batch_index: int,
+    identities: Sequence[dict[str, object]],
+    frames: Sequence[OCRFrame],
+) -> dict[str, object]:
+    return {
+        "schema": OCR_CHECKPOINT_SCHEMA,
+        "revision": OCR_REVISION,
+        "recipe": recipe_key,
+        "batch_index": batch_index,
+        "frames": [
+            {
+                "identity": identity,
+                "failed": frame.error is not None,
+                "observations": [
+                    {
+                        "text": observation.text,
+                        "confidence": observation.confidence,
+                        "bounding_box": {
+                            "x": observation.bounding_box.x,
+                            "y": observation.bounding_box.y,
+                            "width": observation.bounding_box.width,
+                            "height": observation.bounding_box.height,
+                        },
+                    }
+                    for observation in frame.observations
+                ],
+            }
+            for identity, frame in zip(identities, frames)
+        ],
+    }
+
+
+def _load_ocr_checkpoint(
+    path: Path,
+    *,
+    recipe_key: str,
+    batch_index: int,
+    identities: Sequence[dict[str, object]],
+    sampled_frames: Sequence[SampledFrame],
+) -> tuple[OCRFrame, ...] | None:
     try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        try:
-            await worker
-        except BaseException:
-            pass
-        raise
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema") != OCR_CHECKPOINT_SCHEMA:
+            return None
+        if payload.get("revision") != OCR_REVISION:
+            return None
+        if payload.get("recipe") != recipe_key:
+            return None
+        if payload.get("batch_index") != batch_index:
+            return None
+        raw_frames = payload.get("frames")
+        if not isinstance(raw_frames, list) or len(raw_frames) != len(sampled_frames):
+            return None
+
+        frames: list[OCRFrame] = []
+        for raw, identity, sampled in zip(raw_frames, identities, sampled_frames):
+            if not isinstance(raw, dict) or raw.get("identity") != identity:
+                return None
+            frames.append(_decode_ocr_frame(raw, sampled.path))
+        return tuple(frames)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+def _decode_ocr_frame(raw: dict[str, object], path: Path) -> OCRFrame:
+    failed = raw.get("failed")
+    if not isinstance(failed, bool):
+        raise TypeError("cached OCR failure state must be boolean")
+    if failed:
+        raise ValueError("failed OCR frames are not complete checkpoints")
+    raw_observations = raw["observations"]
+    if not isinstance(raw_observations, list):
+        raise TypeError("cached OCR observations must be a list")
+
+    observations: list[OCRObservation] = []
+    for raw_observation in raw_observations:
+        if not isinstance(raw_observation, dict):
+            raise TypeError("cached OCR observation must be an object")
+        text = raw_observation["text"]
+        confidence = _finite_number(raw_observation["confidence"])
+        raw_box = raw_observation["bounding_box"]
+        if not isinstance(text, str) or not text.strip() or not isinstance(raw_box, dict):
+            raise TypeError("cached OCR observation is invalid")
+        if not 0 <= confidence <= 1:
+            raise ValueError("cached OCR confidence is invalid")
+        observations.append(
+            OCRObservation(
+                text=text,
+                confidence=confidence,
+                bounding_box=BoundingBox(
+                    x=_finite_number(raw_box["x"]),
+                    y=_finite_number(raw_box["y"]),
+                    width=_finite_number(raw_box["width"]),
+                    height=_finite_number(raw_box["height"]),
+                ),
+            )
+        )
+    return OCRFrame(
+        path=str(path),
+        observations=tuple(observations),
+        error=None,
+    )
+
+
+def _finite_number(value: object) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("cached OCR number is not finite")
+    return number
 
 
 def _atomic_json(path: Path, payload: object) -> bool:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
     descriptor: int | None = None
     try:
-        content = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        content = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ) + "\n"
         descriptor = os.open(
             temporary,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
