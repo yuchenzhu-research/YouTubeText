@@ -3,6 +3,11 @@ name: Real model smoke (manual)
 # Model weights are deliberately not downloaded for push or pull_request runs.
 on:
   workflow_dispatch:
+    inputs:
+      video_url:
+        description: Optional public YouTube or Bilibili URL for a live Windows CLI run
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -35,3 +40,35 @@ jobs:
         env:
           HF_HUB_OFFLINE: "1"
         run: uv run --no-sync pytest -vv tests/test_real_models_windows.py
+
+      - name: Reuse the prefetched model in the CLI cache
+        if: ${{ inputs.video_url != '' }}
+        run: >-
+          uv run --no-sync python -c
+          "import os, shutil; from pathlib import Path; from platformdirs import user_cache_dir;
+          source = Path(os.environ['YOUTUBETEXT_REAL_MODEL_CACHE']) / 'faster';
+          target = Path(user_cache_dir('YouTubeText')) / 'faster-whisper';
+          shutil.copytree(source, target, dirs_exist_ok=True)"
+
+      - name: Process the public URL through the Windows CLI
+        if: ${{ inputs.video_url != '' }}
+        env:
+          HF_HUB_OFFLINE: "1"
+          YOUTUBETEXT_LIVE_URL: ${{ inputs.video_url }}
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'YouTubeText live transcript'
+          uv run --no-sync youtubetext $env:YOUTUBETEXT_LIVE_URL --mode whisper --whisper-model base --output $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadataFiles = @(Get-ChildItem -LiteralPath $output -Recurse -File -Filter metadata.json)
+          if ($metadataFiles.Count -ne 1) { throw 'Expected exactly one exported transcript.' }
+          $metadata = (Get-Content -LiteralPath $metadataFiles[0].FullName -Raw) | ConvertFrom-Json
+          if ($metadata.extraction_method -ne 'faster-whisper' -or $metadata.segment_count -le 0) {
+            throw 'The live URL did not produce a nonempty Windows speech transcript.'
+          }
+          foreach ($name in @('transcript.md', 'transcript-clean.md', 'transcript.txt')) {
+            $path = Join-Path $metadataFiles[0].DirectoryName $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Missing or empty export: $name"
+            }
+          }
