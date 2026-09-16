@@ -47,9 +47,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\.venv\Scripts\youtubetext.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $doctorJson = & .\.venv\Scripts\youtubetext.exe doctor --json
-          if ($LASTEXITCODE -ne 1) { throw 'Doctor accepted an unusable FFmpeg fixture.' }
-          $doctor = $doctorJson | ConvertFrom-Json
+          $doctorOutput = Join-Path $env:RUNNER_TEMP 'youtubetext-doctor.json'
+          $doctorError = Join-Path $env:RUNNER_TEMP 'youtubetext-doctor-error.txt'
+          $doctorProcess = Start-Process -FilePath (Resolve-Path .\.venv\Scripts\youtubetext.exe).Path -ArgumentList @('doctor', '--json') -NoNewWindow -Wait -PassThru -RedirectStandardOutput $doctorOutput -RedirectStandardError $doctorError
+          if ($doctorProcess.ExitCode -ne 1) { throw 'Doctor accepted an unusable FFmpeg fixture.' }
+          $doctor = (Get-Content -LiteralPath $doctorOutput -Raw) | ConvertFrom-Json
           $ffmpegCheck = @($doctor.checks | Where-Object { $_.key -eq 'ffmpeg' })
           if ($doctor.ready -or $ffmpegCheck.Count -ne 1 -or $ffmpegCheck[0].ok) {
             throw 'Doctor must report the FFmpeg fixture as unavailable.'
@@ -64,6 +66,30 @@ jobs:
       - name: Isolate process-interruption test
         if: runner.os == 'macOS'
         run: uv run --no-sync pytest tests/test_supervisor.py::test_interrupt_terminates_the_worker_process_group -vv
+
+      - name: Run unit tests
+        run: uv run --no-sync pytest
+
+  python-compatibility:
+    name: Compatibility · ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+        python: ["3.11", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Only resolve/install locked packages and run local tests. Model weights
+      # and external video URLs belong to the manual workflow, not this matrix.
+      - name: Install locked dependencies
+        run: uv sync --locked --python ${{ matrix.python }}
 
       - name: Run unit tests
         run: uv run --no-sync pytest
