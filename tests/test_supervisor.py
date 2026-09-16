@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import signal
@@ -141,6 +142,130 @@ raise SystemExit(run_supervised(command, temp_parent=temp_parent, grace_seconds=
                 pass
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-tree integration test")
+def test_windows_interrupt_reaps_child_after_worker_exits(tmp_path: Path) -> None:
+    state = tmp_path / "windows-process-tree.json"
+    stop = tmp_path / "stop-worker"
+    worker_program = r"""
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+state, stop, run_temp_env = sys.argv[1:]
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+Path(state).write_text(json.dumps({
+    "worker": os.getpid(),
+    "grandchild": child.pid,
+    "run_root": os.environ[run_temp_env],
+}), encoding="utf-8")
+while not Path(stop).exists():
+    time.sleep(0.01)
+"""
+    supervisor_program = r"""
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import youtubetext._supervisor as supervisor
+
+state, stop, temp_parent, *command = sys.argv[1:]
+original_wait = subprocess.Popen.wait
+original_send_signal = subprocess.Popen.send_signal
+original_run = subprocess.run
+interrupted = False
+
+def interrupt_once(self, timeout=None):
+    global interrupted
+    if not interrupted and timeout is None:
+        deadline = time.monotonic() + 5
+        while not Path(state).exists():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("worker did not start")
+            time.sleep(0.01)
+        interrupted = True
+        raise KeyboardInterrupt
+    return original_wait(self, timeout=timeout)
+
+def simulated_break(self, event):
+    if event == signal.CTRL_BREAK_EVENT:
+        Path(stop).write_text("stop", encoding="utf-8")
+        return
+    return original_send_signal(self, event)
+
+def unavailable_taskkill(command, **kwargs):
+    if command and command[0] == "taskkill":
+        return subprocess.CompletedProcess(command, 1)
+    return original_run(command, **kwargs)
+
+subprocess.Popen.wait = interrupt_once
+subprocess.Popen.send_signal = simulated_break
+subprocess.run = unavailable_taskkill
+raise SystemExit(supervisor.run_supervised(
+    command, temp_parent=temp_parent, grace_seconds=0.2,
+))
+"""
+    supervisor = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            supervisor_program,
+            str(state),
+            str(stop),
+            str(tmp_path),
+            sys.executable,
+            "-c",
+            worker_program,
+            str(state),
+            str(stop),
+            RUN_TEMP_ENV,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    details: dict[str, object] = {}
+    try:
+        _stdout, stderr = supervisor.communicate(timeout=10)
+        assert supervisor.returncode == 130, stderr
+        details = json.loads(state.read_text(encoding="utf-8"))
+
+        grandchild = int(details["grandchild"])
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and _windows_process_exists(grandchild):
+            time.sleep(0.02)
+        assert not _windows_process_exists(grandchild)
+        assert not Path(str(details["run_root"])).exists()
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.wait(timeout=5)
+        if not details:
+            try:
+                details = json.loads(state.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+        if details and _windows_process_exists(int(details["grandchild"])):
+            subprocess.run(
+                ["taskkill", "/PID", str(details["grandchild"]), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+
+
 def test_popen_options_are_platform_specific(monkeypatch) -> None:
     monkeypatch.setattr(supervisor_module.os, "name", "nt")
     assert supervisor_module._popen_options() == {
@@ -178,6 +303,9 @@ def test_windows_termination_escalates_from_break_to_taskkill(monkeypatch) -> No
                 raise subprocess.TimeoutExpired("worker", timeout)
             return 0
 
+        def poll(self) -> int | None:
+            return 0 if self.done else None
+
         def kill(self) -> None:
             self.killed = True
             self.done = True
@@ -203,9 +331,107 @@ def test_windows_termination_escalates_from_break_to_taskkill(monkeypatch) -> No
     assert not process.killed
 
 
+def test_windows_termination_keeps_cleaning_when_parent_exits_after_break(
+    monkeypatch,
+) -> None:
+    class FakeProcess:
+        pid = 654
+
+        def __init__(self) -> None:
+            self.done = False
+            self.descendant_alive = True
+
+        def send_signal(self, _event: int) -> None:
+            self.done = True
+
+        def wait(self, timeout=None) -> int:
+            return 0
+
+        def poll(self) -> int | None:
+            return 0 if self.done else None
+
+        def kill(self) -> None:
+            self.done = True
+
+    class FakeJob:
+        def __init__(self, process: FakeProcess) -> None:
+            self.process = process
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+            self.process.descendant_alive = False
+
+    process = FakeProcess()
+    job = FakeJob(process)
+    taskkill_calls: list[list[str]] = []
+
+    def taskkill(command, **_kwargs):
+        taskkill_calls.append(command)
+        process.descendant_alive = False
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(supervisor_module.signal, "CTRL_BREAK_EVENT", 1, raising=False)
+    monkeypatch.setattr(supervisor_module.subprocess, "run", taskkill)
+
+    supervisor_module._terminate_windows_process_tree(
+        process,  # type: ignore[arg-type]
+        grace_seconds=0.01,
+        job=job,  # type: ignore[arg-type]
+    )
+
+    assert job.closed
+    assert taskkill_calls == []
+    assert not process.descendant_alive
+
+
+def test_windows_without_job_does_not_taskkill_an_exited_parent(monkeypatch) -> None:
+    class FakeProcess:
+        pid = 765
+
+        def send_signal(self, _event: int) -> None:
+            pass
+
+        def wait(self, timeout=None) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    calls: list[list[str]] = []
+
+    def taskkill(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(supervisor_module.signal, "CTRL_BREAK_EVENT", 1, raising=False)
+    monkeypatch.setattr(supervisor_module.subprocess, "run", taskkill)
+
+    supervisor_module._terminate_windows_process_tree(
+        FakeProcess(),  # type: ignore[arg-type]
+        grace_seconds=0.01,
+    )
+
+    assert calls == []
+
+
 def _process_exists(process_id: int) -> bool:
     try:
         os.kill(process_id, 0)
     except ProcessLookupError:
         return False
     return True
+
+
+def _windows_process_exists(process_id: int) -> bool:
+    completed = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {process_id}", "/FO", "CSV", "/NH"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return any(
+        len(row) > 1 and row[1] == str(process_id)
+        for row in csv.reader(completed.stdout.splitlines())
+    )

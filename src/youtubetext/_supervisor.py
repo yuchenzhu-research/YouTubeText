@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import signal
 import subprocess
@@ -13,6 +14,96 @@ from pathlib import Path
 SUPERVISED_ENV = "YOUTUBETEXT_SUPERVISED_WORKER"
 RUN_TEMP_ENV = "YOUTUBETEXT_RUN_TEMP"
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+
+class _JobBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _JobIoCounters(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class _JobExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JobBasicLimitInformation),
+        ("IoInfo", _JobIoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class _WindowsKillOnCloseJob:
+    """Own one worker tree until the supervisor closes the job handle."""
+
+    def __init__(self) -> None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        kernel32.SetInformationJobObject.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        )
+        kernel32.SetInformationJobObject.restype = ctypes.c_int
+        kernel32.AssignProcessToJobObject.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )
+        kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._kernel32 = kernel32
+        self._handle = handle
+        limits = _JobExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            handle,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            error = ctypes.WinError(ctypes.get_last_error())
+            self.close()
+            raise error
+
+    def assign(self, process: subprocess.Popen) -> None:
+        if not self._kernel32.AssignProcessToJobObject(
+            self._handle, process._handle
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is not None and not self._kernel32.CloseHandle(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
 
 
 def run_supervised(
@@ -37,19 +128,34 @@ def run_supervised(
         child_environment["TMPDIR"] = str(run_root)
         child_environment["TEMP"] = str(run_root)
         child_environment["TMP"] = str(run_root)
-        process = subprocess.Popen(
-            [str(part) for part in command],
-            env=child_environment,
-            **_popen_options(),
-        )
+        job = _WindowsKillOnCloseJob() if os.name == "nt" else None
         try:
-            return process.wait()
-        except KeyboardInterrupt:
-            _terminate_process_tree(process, grace_seconds=grace_seconds)
-            return 130
-        except BaseException:
-            _terminate_process_tree(process, grace_seconds=grace_seconds)
-            raise
+            process = subprocess.Popen(
+                [str(part) for part in command],
+                env=child_environment,
+                **_popen_options(),
+            )
+            if job is not None:
+                try:
+                    job.assign(process)
+                except OSError:
+                    _terminate_windows_process_tree(process, grace_seconds=0)
+                    raise
+            try:
+                return process.wait()
+            except KeyboardInterrupt:
+                _terminate_process_tree(
+                    process, grace_seconds=grace_seconds, windows_job=job
+                )
+                return 130
+            except BaseException:
+                _terminate_process_tree(
+                    process, grace_seconds=grace_seconds, windows_job=job
+                )
+                raise
+        finally:
+            if job is not None:
+                job.close()
 
 
 def _popen_options() -> dict[str, object]:
@@ -68,11 +174,14 @@ def _terminate_process_tree(
     process: subprocess.Popen,
     *,
     grace_seconds: float,
+    windows_job: _WindowsKillOnCloseJob | None = None,
 ) -> None:
     """Stop and reap the isolated worker group with bounded escalation."""
 
     if os.name == "nt":
-        _terminate_windows_process_tree(process, grace_seconds=grace_seconds)
+        _terminate_windows_process_tree(
+            process, grace_seconds=grace_seconds, job=windows_job
+        )
         return
     _terminate_posix_process_group(process, grace_seconds=grace_seconds)
 
@@ -103,8 +212,9 @@ def _terminate_windows_process_tree(
     process: subprocess.Popen,
     *,
     grace_seconds: float,
+    job: _WindowsKillOnCloseJob | None = None,
 ) -> None:
-    """Offer Ctrl+Break, then use taskkill to include descendant processes."""
+    """Offer Ctrl+Break, then close the job or force-stop a live root tree."""
 
     break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
     if break_event is not None:
@@ -112,8 +222,18 @@ def _terminate_windows_process_tree(
             process.send_signal(break_event)
         except (OSError, ValueError):
             pass
-        if _wait_for_process(process, grace_seconds):
+        _wait_for_process(process, grace_seconds)
+
+    if job is not None:
+        job.close()
+        if _wait_for_process(process, max(0.1, grace_seconds)):
             return
+        process.kill()
+        process.wait()
+        return
+
+    if process.poll() is not None:
+        return
 
     try:
         subprocess.run(
