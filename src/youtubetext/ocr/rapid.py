@@ -118,11 +118,13 @@ class RapidOCRBackend:
 def _load_engine() -> _RapidEngine:
     try:
         from rapidocr import RapidOCR
+
+        return RapidOCR()
     except ImportError as error:  # pragma: no cover - Windows packaging failure
         raise RapidOCRUnavailableError(
-            "RapidOCR is not installed; reinstall YouTubeText on Windows"
+            "RapidOCR or ONNX Runtime is not installed correctly; "
+            "reinstall YouTubeText on Windows"
         ) from error
-    return RapidOCR()
 
 
 def _package_version(name: str) -> str:
@@ -179,18 +181,23 @@ def _observations(
 
 def _normalized_box(box: Any, width: float, height: float) -> BoundingBox:
     try:
-        points = tuple((float(point[0]), float(point[1])) for point in box)
-    except (TypeError, ValueError, IndexError) as error:
+        raw_points = tuple(tuple(point) for point in box)
+        if len(raw_points) != 4 or any(len(point) != 2 for point in raw_points):
+            raise ValueError
+        points = tuple((float(point[0]), float(point[1])) for point in raw_points)
+    except (TypeError, ValueError) as error:
         raise ValueError("RapidOCR returned an invalid bounding box") from error
-    if len(points) < 2 or not all(
+    if not all(
         math.isfinite(value) for point in points for value in point
     ):
         raise ValueError("RapidOCR returned an invalid bounding box")
 
-    left = min(max(0.0, point[0]) for point in points)
-    right = max(min(width, point[0]) for point in points)
-    top = min(max(0.0, point[1]) for point in points)
-    bottom = max(min(height, point[1]) for point in points)
+    x_coordinates = tuple(min(width, max(0.0, point[0])) for point in points)
+    y_coordinates = tuple(min(height, max(0.0, point[1])) for point in points)
+    left = min(x_coordinates)
+    right = max(x_coordinates)
+    top = min(y_coordinates)
+    bottom = max(y_coordinates)
     if right <= left or bottom <= top:
         raise ValueError("RapidOCR returned an empty bounding box")
     return BoundingBox(

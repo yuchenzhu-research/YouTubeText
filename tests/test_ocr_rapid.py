@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import concurrent.futures
+import sys
 import threading
 import time
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
-from youtubetext.ocr import RapidOCRBackend
+from youtubetext.ocr import RapidOCRBackend, RapidOCRUnavailableError
+from youtubetext.ocr.rapid import _load_engine
 
 
 @dataclass
@@ -120,6 +123,105 @@ def test_rapidocr_marks_malformed_result_as_frame_error(tmp_path: Path) -> None:
 
     assert frame.observations == ()
     assert frame.error == "RapidOCR returned mismatched observation counts"
+
+
+def test_rapidocr_accepts_real_empty_output_without_image_shape(tmp_path: Path) -> None:
+    class EmptyEngine:
+        def __call__(self, _image_path: str) -> FakeResult:
+            return FakeResult(boxes=None, txts=None, scores=None, img=None)
+
+    backend = RapidOCRBackend(engine_factory=EmptyEngine)
+
+    frame = backend.recognize_images((tmp_path / "empty.jpg",))[0]
+
+    assert frame.observations == ()
+    assert frame.error is None
+
+
+@pytest.mark.parametrize(
+    "box",
+    (
+        ((0, 0), (10, 10)),
+        ((0, 0), (10, 0), (10, 10)),
+        ((0, 0), (10, 0), (10, 10), (0, 10), (5, 5)),
+        ((0, 0, 1), (10, 0), (10, 10), (0, 10)),
+    ),
+)
+def test_rapidocr_rejects_non_quadrilateral_boxes(tmp_path: Path, box) -> None:
+    class InvalidBoxEngine:
+        def __call__(self, _image_path: str) -> FakeResult:
+            return FakeResult(boxes=(box,), txts=("text",), scores=(0.9,))
+
+    frame = RapidOCRBackend(
+        engine_factory=InvalidBoxEngine
+    ).recognize_images((tmp_path / "frame.jpg",))[0]
+
+    assert frame.observations == ()
+    assert frame.error == "RapidOCR returned an invalid bounding box"
+
+
+def test_rapidocr_clamps_partially_outside_box(tmp_path: Path) -> None:
+    class OutsideEngine:
+        def __call__(self, _image_path: str) -> FakeResult:
+            return FakeResult(
+                boxes=(((-100, 700), (2100, 700), (2100, 800), (-100, 800)),),
+                txts=("wide caption",),
+                scores=(0.9,),
+            )
+
+    frame = RapidOCRBackend(
+        engine_factory=OutsideEngine
+    ).recognize_images((tmp_path / "frame.jpg",))[0]
+
+    box = frame.observations[0].bounding_box
+    assert box.x == 0
+    assert box.width == 1
+    assert box.y == pytest.approx(0.2)
+
+
+def test_rapidocr_reports_invalid_image_shape(tmp_path: Path) -> None:
+    class InvalidImage:
+        shape = (0, 2000, 3)
+
+    class InvalidShapeEngine:
+        def __call__(self, _image_path: str) -> FakeResult:
+            return FakeResult(
+                boxes=(((0, 0), (10, 0), (10, 10), (0, 10)),),
+                txts=("text",),
+                scores=(0.9,),
+                img=InvalidImage(),
+            )
+
+    frame = RapidOCRBackend(
+        engine_factory=InvalidShapeEngine
+    ).recognize_images((tmp_path / "frame.jpg",))[0]
+
+    assert frame.observations == ()
+    assert frame.error == "RapidOCR returned an invalid image height"
+
+
+def test_rapidocr_factory_failure_is_a_batch_error(tmp_path: Path) -> None:
+    backend = RapidOCRBackend(
+        engine_factory=lambda: (_ for _ in ()).throw(RuntimeError("model unavailable"))
+    )
+
+    with pytest.raises(RuntimeError, match="model unavailable"):
+        backend.recognize_images((tmp_path / "frame.jpg",))
+
+
+def test_rapidocr_wraps_constructor_import_errors(monkeypatch) -> None:
+    class BrokenRapidOCR:
+        def __init__(self) -> None:
+            raise ImportError("onnxruntime is missing")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(RapidOCR=BrokenRapidOCR),
+    )
+
+    with pytest.raises(RapidOCRUnavailableError, match="ONNX Runtime"):
+        _load_engine()
 
 
 def test_rapidocr_checkpoint_revision_is_stable() -> None:
