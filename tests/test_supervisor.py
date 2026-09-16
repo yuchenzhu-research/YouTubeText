@@ -151,6 +151,15 @@ def test_popen_options_are_platform_specific(monkeypatch) -> None:
     assert supervisor_module._popen_options() == {"start_new_session": True}
 
 
+def test_process_group_probe_treats_permission_denied_as_existing(monkeypatch) -> None:
+    def denied(_group: int, _signal: int) -> None:
+        raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr(supervisor_module.os, "killpg", denied)
+
+    assert supervisor_module._process_group_exists(321)
+
+
 def test_windows_termination_escalates_from_break_to_taskkill(monkeypatch) -> None:
     class FakeProcess:
         pid = 321

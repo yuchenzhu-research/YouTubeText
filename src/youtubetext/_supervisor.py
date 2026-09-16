@@ -144,6 +144,10 @@ def _process_group_exists(process_group: int) -> bool:
         os.killpg(process_group, 0)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        # macOS can deny signal-zero probing of a live process group even
+        # though the child group is still ours to terminate.
+        return True
     return True
 
 
