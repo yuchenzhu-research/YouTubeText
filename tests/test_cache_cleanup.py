@@ -212,9 +212,9 @@ def test_windows_clear_incomplete_refuses_to_delete_task_state(tmp_path: Path) -
     transcript.parent.mkdir()
     transcript.write_bytes(b"completed transcript")
 
-    cleanup = LocalResumeStore(root).clear_incomplete()
+    with pytest.raises(NotImplementedError, match="not supported on Windows"):
+        LocalResumeStore(root).clear_incomplete()
 
-    assert cleanup == CacheCleanup(root=root, failed_tasks=1)
     assert state.read_bytes() == b"unfinished task"
     assert transcript.read_bytes() == b"completed transcript"
     assert not (root / "locks").exists()

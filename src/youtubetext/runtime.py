@@ -221,5 +221,5 @@ class TaskScheduler:
         return await self.map(
             urls,
             worker,
-            lambda url, exc: TaskResult(url=url, error=str(exc)),
+            lambda url, exc: TaskResult(url=url, error=str(exc) or type(exc).__name__),
         )

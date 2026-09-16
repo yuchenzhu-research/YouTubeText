@@ -328,7 +328,11 @@ def _run_cache(arguments: tuple[str, ...], *, json_output: bool) -> None:
         )
     store = LocalResumeStore()
     if normalized == ("clear-incomplete",):
-        cleanup = store.clear_incomplete()
+        try:
+            cleanup = store.clear_incomplete()
+        except NotImplementedError as exc:
+            _fatal_error(exc, json_output=json_output)
+            return
         if json_output:
             click.echo(json.dumps(cleanup.as_dict(), ensure_ascii=False))
         else:

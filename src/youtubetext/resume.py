@@ -226,8 +226,10 @@ class LocalResumeStore:
         """Delete abandoned task state while skipping every active task lock."""
 
         if os.name == "nt":
-            task_count, _task_bytes = _task_tree_usage(self._tasks)
-            return CacheCleanup(root=self.root, failed_tasks=task_count)
+            raise NotImplementedError(
+                "cache clear-incomplete is not supported on Windows; "
+                "no cache files were deleted"
+            )
 
         root_descriptor: int | None = None
         tasks_descriptor: int | None = None

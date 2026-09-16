@@ -106,6 +106,18 @@ async def test_scheduler_preserves_order_and_isolates_failures():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_reports_exception_type_when_message_is_empty():
+    scheduler = TaskScheduler(CapacityPlan.for_host(host(16), requested_jobs=1))
+
+    async def worker(_url: str) -> TaskResult:
+        raise ValueError()
+
+    results = await scheduler.run(["broken"], worker)
+
+    assert results[0].error == "ValueError"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_generic_map_preserves_order_and_maps_errors():
     scheduler = TaskScheduler(CapacityPlan.for_host(host(16), requested_jobs=2))
 

@@ -24,7 +24,7 @@ from youtubetext.domain import (
 from youtubetext.planning import PlanResult, build_processing_plan
 from youtubetext.progress import ProgressEvent, Stage
 from youtubetext.resume import CacheCleanup, CacheUsage, LocalResumeStore
-from youtubetext.runtime import HostProfile
+from youtubetext.runtime import HostProfile, TaskScheduler
 from youtubetext.sources import SourceInspection, SubtitleAvailability, SubtitleKind
 
 URL_1 = "https://youtu.be/first"
@@ -453,6 +453,26 @@ def test_json_output_is_ordered_and_contains_no_progress(monkeypatch, tmp_path):
     assert "Metadata read" not in result.output
 
 
+def test_json_output_reports_type_for_empty_exception_message(monkeypatch):
+    install_fake_runtime(monkeypatch, [])
+
+    class FailingEngine(FakeEngine):
+        async def process(self, urls, options, *, progress):
+            async def worker(_url):
+                raise ValueError()
+
+            return await TaskScheduler(self.plan).run(urls, worker)
+
+    monkeypatch.setattr(cli, "YouTubeTextEngine", FailingEngine)
+
+    result = CliRunner().invoke(cli.main, [URL_1, "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["results"][0]["success"] is False
+    assert payload["results"][0]["error"] == "ValueError"
+
+
 def test_plan_json_reports_unvalidated_caption_and_download_route(
     monkeypatch,
     tmp_path,
@@ -728,6 +748,30 @@ def test_cache_clear_incomplete_json_exits_nonzero_on_failed_removal(
 
     assert result.exit_code == 1
     assert json.loads(result.output) == cleanup.as_dict()
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cache_clear_incomplete_reports_unsupported_platform(monkeypatch, json_output):
+    class FakeStore:
+        def clear_incomplete(self):
+            raise NotImplementedError(
+                "cache clear-incomplete is not supported on Windows; "
+                "no cache files were deleted"
+            )
+
+    monkeypatch.setattr(cli, "LocalResumeStore", FakeStore)
+    arguments = ["cache", "clear-incomplete"]
+    if json_output:
+        arguments.append("--json")
+    result = CliRunner().invoke(cli.main, arguments)
+
+    assert result.exit_code == 1
+    if json_output:
+        payload = json.loads(result.output)
+        assert payload["success"] is False
+        assert "not supported on Windows" in payload["error"]
+    else:
+        assert "not supported on Windows" in result.output
 
 
 def test_invalid_jobs_is_rejected_before_runtime(monkeypatch):
