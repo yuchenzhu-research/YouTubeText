@@ -106,6 +106,23 @@ cd YouTubeText
 ./.venv/bin/youtubetext URL --json
 ```
 
+需要登录才能访问的视频，可以直接使用本机浏览器的登录状态：
+
+```bash
+./.venv/bin/youtubetext URL --cookies-from-browser safari
+```
+
+也可以传入 Netscape 格式的 Cookie 文件：
+
+```bash
+./.venv/bin/youtubetext URL --cookies-file /path/to/cookies.txt
+```
+
+两种方式不能同时使用。YouTubeText 不会把 Cookie 内容写入磁盘缓存、输出目录、
+`metadata.json` 或 JSON 结果；Cookie 文件会以每次调用独立的内存副本交给 yt-dlp，
+原文件不会被修改。Safari 读取失败时，可能需要在 macOS“隐私与安全性”设置中给当前
+终端完整磁盘访问权限。
+
 查看全部选项：
 
 ```bash

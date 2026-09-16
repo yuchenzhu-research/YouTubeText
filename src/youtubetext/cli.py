@@ -20,6 +20,7 @@ from .domain import ProcessingMode, TaskOptions, TaskResult
 from .engine import YouTubeTextEngine
 from .progress import ProgressEvent, discard_progress
 from .runtime import CapacityPlan, detect_host
+from .sources import COOKIE_BROWSERS, YtDlpAuth
 
 LANGUAGES = (
     "auto",
@@ -95,6 +96,22 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     show_default=True,
     help="Concurrent URL jobs; 0 selects a safe value automatically.",
 )
+@click.option(
+    "--cookies-from-browser",
+    type=click.Choice(COOKIE_BROWSERS, case_sensitive=False),
+    help="Use login cookies from a local browser profile.",
+)
+@click.option(
+    "--cookies-file",
+    type=click.Path(
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        path_type=Path,
+    ),
+    help="Use a Netscape-format cookies file.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Write machine-readable JSON.")
 @click.option(
     "--doctor",
@@ -112,6 +129,8 @@ def main(
     caption_languages: tuple[str, ...],
     whisper_model: str,
     jobs: int,
+    cookies_from_browser: str | None,
+    cookies_file: Path | None,
     json_output: bool,
     doctor_mode: bool,
 ) -> None:
@@ -127,6 +146,10 @@ def main(
         raise click.UsageError("the doctor command does not accept URL arguments")
     if not urls:
         raise click.UsageError("provide at least one URL, or run 'youtubetext doctor'")
+    if cookies_from_browser and cookies_file is not None:
+        raise click.UsageError(
+            "choose either --cookies-from-browser or --cookies-file, not both"
+        )
 
     try:
         plan = CapacityPlan.for_host(detect_host(), requested_jobs=jobs)
@@ -138,7 +161,12 @@ def main(
             whisper_model=selected_model,
             output_dir=output_dir,
         )
-        engine = YouTubeTextEngine(_transcript_pipeline(), plan)
+        auth = (
+            YtDlpAuth(browser=cookies_from_browser or "", cookie_file=cookies_file)
+            if cookies_from_browser or cookies_file is not None
+            else None
+        )
+        engine = YouTubeTextEngine(_transcript_pipeline(auth), plan)
         console = Console(stderr=True, highlight=False)
         progress = discard_progress if json_output else _progress_sink(console)
         results = asyncio.run(engine.process(list(urls), options, progress=progress))
@@ -190,11 +218,14 @@ def requires_supervised_worker(arguments: tuple[str, ...]) -> bool:
     return bool(urls) and not doctor_mode and not doctor_command
 
 
-def _transcript_pipeline() -> TranscriptPipeline:
+def _transcript_pipeline(auth: YtDlpAuth | None = None) -> TranscriptPipeline:
     run_root = os.environ.get(RUN_TEMP_ENV, "").strip()
+    options: dict[str, object] = {}
     if run_root:
-        return TranscriptPipeline(temp_root=Path(run_root))
-    return TranscriptPipeline()
+        options["temp_root"] = Path(run_root)
+    if auth is not None:
+        options["auth"] = auth
+    return TranscriptPipeline(**options)
 
 
 def _run_doctor(*, json_output: bool) -> None:

@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from youtubetext.domain import SourceMetadata
 
 from ._adapter import PlatformAdapter, resolve_adapter, run_with_platform_retries
-from ._yt_dlp import QUIET_YT_DLP_LOGGER
+from ._yt_dlp import QUIET_YT_DLP_LOGGER, YtDlpAuth
 from .models import SourceFetchError, SourceResult, SubtitleKind, SubtitleTrack
 from .subtitles import parse_subtitle
 
@@ -65,9 +65,11 @@ class SourceClient:
         self,
         runner: Runner | None = None,
         *,
+        auth: YtDlpAuth | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._runner = runner or YtDlpRunner()
+        self._auth = auth or YtDlpAuth()
         self._sleeper = sleeper
 
     def fetch(
@@ -132,21 +134,25 @@ class SourceClient:
     ) -> SubtitleTrack:
         with tempfile.TemporaryDirectory(prefix="youtubetext-subtitles-") as directory:
             root = Path(directory)
-            options = self._options(adapter)
-            options.update(
-                {
-                    "skip_download": True,
-                    "writesubtitles": kind is SubtitleKind.MANUAL,
-                    "writeautomaticsub": kind is SubtitleKind.AUTOMATIC,
-                    "subtitleslangs": [language],
-                    "subtitlesformat": "vtt/srt/best",
-                    "outtmpl": str(root / "subtitle.%(ext)s"),
-                }
-            )
+
+            def download_track() -> Mapping[str, Any]:
+                options = self._options(adapter)
+                options.update(
+                    {
+                        "skip_download": True,
+                        "writesubtitles": kind is SubtitleKind.MANUAL,
+                        "writeautomaticsub": kind is SubtitleKind.AUTOMATIC,
+                        "subtitleslangs": [language],
+                        "subtitlesformat": "vtt/srt/best",
+                        "outtmpl": str(root / "subtitle.%(ext)s"),
+                    }
+                )
+                return self._runner.run(url, options, download=True)
+
             try:
                 run_with_platform_retries(
                     adapter,
-                    lambda: self._runner.run(url, options, download=True),
+                    download_track,
                     sleep=self._sleeper,
                 )
             except Exception as exc:
@@ -177,8 +183,7 @@ class SourceClient:
                 )
             return SubtitleTrack(language=language, kind=kind, segments=segments)
 
-    @staticmethod
-    def _options(adapter: PlatformAdapter) -> dict[str, Any]:
+    def _options(self, adapter: PlatformAdapter) -> dict[str, Any]:
         options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -188,6 +193,7 @@ class SourceClient:
             "logger": QUIET_YT_DLP_LOGGER,
         }
         options.update(adapter.yt_dlp_options())
+        options.update(self._auth.yt_dlp_options())
         return options
 
 

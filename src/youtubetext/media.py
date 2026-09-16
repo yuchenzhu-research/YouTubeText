@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .sources._adapter import resolve_adapter, run_with_platform_retries
-from .sources._yt_dlp import QUIET_YT_DLP_LOGGER
+from .sources._yt_dlp import QUIET_YT_DLP_LOGGER, YtDlpAuth
 
 
 class MediaPurpose(str, Enum):
@@ -56,9 +56,11 @@ class MediaDownloader:
         self,
         runner: Callable[[str, Mapping], object] | None = None,
         *,
+        auth: YtDlpAuth | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ):
         self._runner = runner
+        self._auth = auth or YtDlpAuth()
         self._sleeper = sleeper
 
     @staticmethod
@@ -93,10 +95,11 @@ class MediaDownloader:
         template = directory / f"{stem}.%(ext)s"
         adapter = resolve_adapter(url)
         request_url = adapter.request_url(url)
-        options = self.options_for(purpose, template)
-        options.update(adapter.yt_dlp_options())
 
         def run_download() -> object:
+            options = self.options_for(purpose, template)
+            options.update(adapter.yt_dlp_options())
+            options.update(self._auth.yt_dlp_options())
             if self._runner is not None:
                 return self._runner(request_url, options)
 

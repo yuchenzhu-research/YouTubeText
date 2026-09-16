@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from youtubetext.media import FrameSampler, MediaDownloader, MediaPurpose, sampling_interval
+from youtubetext.sources import YtDlpAuth
 
 
 def test_sampling_interval_bounds_long_video_frame_count():
@@ -38,6 +39,28 @@ async def test_injected_download_runner_can_return_file(tmp_path):
     assert seen["options"]["extractor_retries"] == 3
     assert seen["options"]["noprogress"] is True
     assert seen["options"]["logger"] is not None
+
+
+@pytest.mark.asyncio
+async def test_media_download_uses_the_same_browser_cookies(tmp_path):
+    artifact = tmp_path / "input.webm"
+    artifact.write_bytes(b"media")
+    seen = {}
+
+    def runner(url, options):
+        seen.update(url=url, options=options)
+        return artifact
+
+    await MediaDownloader(runner, auth=YtDlpAuth(browser="chrome")).download(
+        "https://youtu.be/id", tmp_path / "work", MediaPurpose.AUDIO
+    )
+
+    assert seen["options"]["cookiesfrombrowser"] == (
+        "chrome",
+        None,
+        None,
+        None,
+    )
 
 
 @pytest.mark.asyncio
@@ -83,6 +106,34 @@ async def test_bilibili_media_download_retries_http_412(tmp_path):
     assert path == artifact.resolve()
     assert calls == 3
     assert delays == [0.5, 1.5]
+
+
+@pytest.mark.asyncio
+async def test_media_retries_receive_fresh_in_memory_cookie_files(tmp_path):
+    artifact = tmp_path / "input.mp4"
+    artifact.write_bytes(b"media")
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("cookie data", encoding="utf-8")
+    streams: list[object] = []
+
+    def runner(_url, options):
+        streams.append(options["cookiefile"])
+        if len(streams) < 3:
+            raise RuntimeError("HTTP Error 412: Precondition Failed")
+        return artifact
+
+    await MediaDownloader(
+        runner,
+        auth=YtDlpAuth(cookie_file=cookie_file),
+        sleeper=lambda _delay: None,
+    ).download(
+        "https://www.bilibili.com/video/BV1abc",
+        tmp_path / "work",
+        MediaPurpose.ANALYSIS_VIDEO,
+    )
+
+    assert len(streams) == 3
+    assert len({id(stream) for stream in streams}) == 3
 
 
 @pytest.mark.asyncio

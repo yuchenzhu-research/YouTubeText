@@ -26,6 +26,9 @@ frontend/.vite/
 .env.*
 !.env.example
 release-config.json
+cookies.txt
+cookies-*.txt
+*.cookies.txt
 
 # Runtime and generated artifacts
 temp/

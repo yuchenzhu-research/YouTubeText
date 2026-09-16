@@ -29,7 +29,7 @@ from .ocr import (
 )
 from .progress import ProgressEvent, ProgressSink, Stage
 from .runtime import ResourceGates
-from .sources import SourceClient, SourceResult
+from .sources import SourceClient, SourceResult, YtDlpAuth
 
 
 class TranscriptAcquisitionError(RuntimeError):
@@ -100,13 +100,14 @@ class TranscriptPipeline:
         frames: FrameProvider | None = None,
         ocr: OCRProvider | None = None,
         asr_factory: ASRFactory | None = None,
+        auth: YtDlpAuth | None = None,
         temp_root: Path | None = None,
         ocr_batch_size: int = 32,
     ) -> None:
         if ocr_batch_size < 1:
             raise ValueError("ocr_batch_size must be at least one")
-        self._sources = sources or SourceClient()
-        self._media = media or MediaDownloader()
+        self._sources = sources or SourceClient(auth=auth)
+        self._media = media or MediaDownloader(auth=auth)
         self._frames = frames or FrameSampler()
         self._ocr = ocr or MacVisionOCR()
         self._asr_factory = asr_factory or _default_asr_factory

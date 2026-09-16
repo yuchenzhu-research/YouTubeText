@@ -87,6 +87,8 @@ def test_help_and_version_do_not_require_a_url():
     assert help_result.exit_code == 0
     assert "youtubetext [OPTIONS] URL [URL...]" in help_result.output
     assert "YouTube or Bilibili" in help_result.output
+    assert "--cookies-from-browser" in help_result.output
+    assert "--cookies-file" in help_result.output
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
     assert "0.1.0" in version_result.output
@@ -241,6 +243,75 @@ def test_explicit_whisper_model_is_preserved(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert FakeEngine.created[0].options.whisper_model == "base"
+
+
+def test_browser_cookies_are_forwarded_only_to_the_pipeline(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def pipeline_factory(**options):
+        captured.update(options)
+        return object()
+
+    install_fake_runtime(monkeypatch, [successful_result(URL_1, tmp_path)])
+    monkeypatch.setattr(cli, "TranscriptPipeline", pipeline_factory)
+
+    result = CliRunner().invoke(
+        cli.main,
+        [URL_1, "--cookies-from-browser", "safari", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["auth"].browser == "safari"
+    payload = json.loads(result.output)
+    assert "safari" not in result.output
+    assert not any("cookie" in key for key in payload["results"][0])
+
+
+def test_cookie_file_path_and_contents_are_not_exposed(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    cookie_file = tmp_path / "private-auth-source.txt"
+    cookie_file.write_text("unique-secret-cookie-value", encoding="utf-8")
+
+    def pipeline_factory(**options):
+        captured.update(options)
+        return object()
+
+    install_fake_runtime(monkeypatch, [successful_result(URL_1, tmp_path)])
+    monkeypatch.setattr(cli, "TranscriptPipeline", pipeline_factory)
+
+    result = CliRunner().invoke(
+        cli.main,
+        [URL_1, "--cookies-file", str(cookie_file), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["auth"].cookie_file == cookie_file.resolve()
+    assert str(cookie_file.resolve()) not in result.output
+    assert "unique-secret-cookie-value" not in result.output
+
+
+def test_cookie_sources_are_mutually_exclusive(monkeypatch, tmp_path):
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("cookies", encoding="utf-8")
+    monkeypatch.setattr(
+        cli,
+        "detect_host",
+        lambda: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            URL_1,
+            "--cookies-from-browser",
+            "chrome",
+            "--cookies-file",
+            str(cookie_file),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "either --cookies-from-browser or --cookies-file" in result.output
 
 
 def test_partial_failure_preserves_order_and_exits_nonzero(monkeypatch, tmp_path):

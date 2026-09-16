@@ -11,6 +11,7 @@ from youtubetext.sources import (
     SourceFetchError,
     SubtitleKind,
     UnsupportedSourceError,
+    YtDlpAuth,
 )
 
 
@@ -140,6 +141,29 @@ def test_bilibili_http_412_is_retried_with_bounded_backoff():
     assert delays == [0.5, 1.5]
 
 
+def test_bilibili_retries_receive_fresh_in_memory_cookie_files(tmp_path):
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("cookie data", encoding="utf-8")
+    streams: list[object] = []
+
+    class FlakyRunner(FakeRunner):
+        def run(self, url, options, *, download):
+            streams.append(options["cookiefile"])
+            if len(self.calls) < 2:
+                self.calls.append((url, dict(options), download))
+                raise RuntimeError("HTTP Error 412: Precondition Failed")
+            return super().run(url, options, download=download)
+
+    SourceClient(
+        FlakyRunner(),
+        auth=YtDlpAuth(cookie_file=cookie_file),
+        sleeper=lambda _delay: None,
+    ).fetch("https://www.bilibili.com/video/BV1abc")
+
+    assert len(streams) == 3
+    assert len({id(stream) for stream in streams}) == 3
+
+
 def test_non_transient_bilibili_error_is_not_retried():
     runner = FakeRunner(failure=RuntimeError("HTTP Error 403: Forbidden"))
     delays: list[float] = []
@@ -193,6 +217,60 @@ def test_metadata_without_subtitles_is_a_successful_source_result():
     assert result.metadata.duration_seconds == 90.5
     assert len(runner.calls) == 1
     assert runner.calls[0][2] is False
+
+
+def test_browser_cookies_are_used_for_metadata_and_subtitle_download():
+    runner = FakeRunner(
+        youtube_info(subtitles={"en": [{"ext": "vtt"}]}),
+        subtitle=VTT,
+    )
+
+    SourceClient(runner, auth=YtDlpAuth(browser="Safari")).fetch(
+        "https://youtu.be/abc123"
+    )
+
+    expected = ("safari", None, None, None)
+    assert runner.calls[0][1]["cookiesfrombrowser"] == expected
+    assert runner.calls[1][1]["cookiesfrombrowser"] == expected
+
+
+def test_cookie_file_is_isolated_in_memory_for_each_yt_dlp_call(tmp_path):
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("secret cookie material", encoding="utf-8")
+    runner = FakeRunner(
+        youtube_info(subtitles={"en": [{"ext": "vtt"}]}),
+        subtitle=VTT,
+    )
+
+    SourceClient(runner, auth=YtDlpAuth(cookie_file=cookie_file)).fetch(
+        "https://youtu.be/abc123"
+    )
+
+    metadata_copy = runner.calls[0][1]["cookiefile"]
+    subtitle_copy = runner.calls[1][1]["cookiefile"]
+    assert metadata_copy is not subtitle_copy
+    assert metadata_copy.getvalue() == "secret cookie material"
+    metadata_copy.seek(0)
+    metadata_copy.write("changed only in memory")
+    assert cookie_file.read_text(encoding="utf-8") == "secret cookie material"
+
+
+def test_real_yt_dlp_close_does_not_rewrite_the_original_cookie_file(tmp_path):
+    from yt_dlp import YoutubeDL
+
+    original = (
+        "# Netscape HTTP Cookie File\n"
+        ".example.com\tTRUE\t/\tFALSE\t0\tname\tvalue\n"
+    )
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text(original, encoding="utf-8")
+
+    with YoutubeDL(
+        {**YtDlpAuth(cookie_file=cookie_file).yt_dlp_options(), "quiet": True}
+    ):
+        pass
+
+    assert cookie_file.read_text(encoding="utf-8") == original
 
 
 def test_metadata_only_mode_never_downloads_an_advertised_caption():
