@@ -6,6 +6,7 @@ from .subtitles import (
     normalize_caption,
     subtitle_segments_from_frames,
 )
+from .rapid import RapidOCRBackend, RapidOCRUnavailableError
 from .types import BoundingBox, OCRFrame, OCRObservation, SubtitleSegment, TimedOCRFrame
 from .vision import (
     MacVisionOCR,
@@ -22,6 +23,8 @@ __all__ = [
     "OCRFrame",
     "OCRObservation",
     "OCRUnavailableError",
+    "RapidOCRBackend",
+    "RapidOCRUnavailableError",
     "SubtitleSegment",
     "TimedOCRFrame",
     "caption_from_observations",
