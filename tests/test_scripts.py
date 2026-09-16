@@ -137,6 +137,7 @@ def run_script(
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script fixture")
 def test_install_rejects_non_macos_before_installing(tmp_path: Path) -> None:
     root = fake_repository(tmp_path)
     tools, log = fake_toolchain(tmp_path)
@@ -150,6 +151,7 @@ def test_install_rejects_non_macos_before_installing(tmp_path: Path) -> None:
     assert not log.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script fixture")
 def test_install_rejects_python_older_than_311(tmp_path: Path) -> None:
     root = fake_repository(tmp_path)
     tools, log = fake_toolchain(tmp_path)
@@ -164,6 +166,7 @@ def test_install_rejects_python_older_than_311(tmp_path: Path) -> None:
     assert not log.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script fixture")
 def test_install_reports_missing_ffmpeg_without_running_brew(tmp_path: Path) -> None:
     root = fake_repository(tmp_path)
     tools, log = fake_toolchain(tmp_path)
@@ -177,6 +180,7 @@ def test_install_reports_missing_ffmpeg_without_running_brew(tmp_path: Path) -> 
     assert not log.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script fixture")
 def test_install_uses_uv_builds_helper_and_prints_run_command(tmp_path: Path) -> None:
     root = fake_repository(tmp_path)
     tools, log = fake_toolchain(tmp_path)
@@ -193,6 +197,7 @@ def test_install_uses_uv_builds_helper_and_prints_run_command(tmp_path: Path) ->
     assert str(root).replace(" ", "\\ ") in result.stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script fixture")
 def test_install_falls_back_to_a_local_venv_when_uv_is_missing(tmp_path: Path) -> None:
     root = fake_repository(tmp_path)
     tools, log = fake_toolchain(tmp_path)
@@ -213,6 +218,7 @@ def test_install_falls_back_to_a_local_venv_when_uv_is_missing(tmp_path: Path) -
     assert (root / "bin" / "youtubetext-vision-ocr").is_file()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script fixture")
 def test_dev_syncs_dependencies_builds_helper_and_runs_tests(tmp_path: Path) -> None:
     root = fake_repository(tmp_path)
     tools, log = fake_toolchain(tmp_path)

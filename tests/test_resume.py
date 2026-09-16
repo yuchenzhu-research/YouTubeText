@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import stat
 import threading
 from pathlib import Path
@@ -57,11 +58,13 @@ async def test_complete_transcript_is_reused_without_repeating_work(tmp_path: Pa
     assert second.transcript == TRANSCRIPT
     assert second.reused is True
     assert calls == 1
-    assert stat.S_IMODE((tmp_path / "resume").stat().st_mode) == 0o700
-    assert stat.S_IMODE((tmp_path / "resume" / "locks").stat().st_mode) == 0o700
+    if os.name != "nt":
+        assert stat.S_IMODE((tmp_path / "resume").stat().st_mode) == 0o700
+        assert stat.S_IMODE((tmp_path / "resume" / "locks").stat().st_mode) == 0o700
     transcript_files = list((tmp_path / "resume" / "transcripts").glob("*.json"))
     assert len(transcript_files) == 1
-    assert stat.S_IMODE(transcript_files[0].stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(transcript_files[0].stat().st_mode) == 0o600
 
 
 @pytest.mark.asyncio

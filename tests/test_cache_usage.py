@@ -65,6 +65,14 @@ def test_usage_counts_direct_transcript_json_and_recursive_task_files(
 
 
 def test_usage_skips_symlinks_without_following_them(tmp_path: Path) -> None:
+    def link(path: Path, target: Path, *, directory: bool = False) -> None:
+        try:
+            path.symlink_to(target, target_is_directory=directory)
+        except OSError as error:
+            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                pytest.skip("Windows symlink creation requires an unavailable privilege")
+            raise
+
     root = tmp_path / "resume"
     transcripts = root / "transcripts"
     transcripts.mkdir(parents=True)
@@ -72,7 +80,7 @@ def test_usage_skips_symlinks_without_following_them(tmp_path: Path) -> None:
     (transcripts / "real.json").write_bytes(real_transcript)
     outside_transcript = tmp_path / "outside.json"
     outside_transcript.write_bytes(b"outside-transcript")
-    (transcripts / "linked.json").symlink_to(outside_transcript)
+    link(transcripts / "linked.json", outside_transcript)
 
     tasks = root / "tasks"
     real_task = tasks / "real-task"
@@ -82,19 +90,13 @@ def test_usage_skips_symlinks_without_following_them(tmp_path: Path) -> None:
 
     outside_file = tmp_path / "outside-media.bin"
     outside_file.write_bytes(b"outside-file")
-    (real_task / "linked-media.bin").symlink_to(outside_file)
+    link(real_task / "linked-media.bin", outside_file)
     outside_directory = tmp_path / "outside-task-data"
     outside_directory.mkdir()
     (outside_directory / "checkpoint.bin").write_bytes(b"outside-directory")
-    (real_task / "linked-directory").symlink_to(
-        outside_directory,
-        target_is_directory=True,
-    )
-    (real_task / "dangling-link").symlink_to(tmp_path / "does-not-exist")
-    (tasks / "linked-task").symlink_to(
-        outside_directory,
-        target_is_directory=True,
-    )
+    link(real_task / "linked-directory", outside_directory, directory=True)
+    link(real_task / "dangling-link", tmp_path / "does-not-exist")
+    link(tasks / "linked-task", outside_directory, directory=True)
 
     usage = LocalResumeStore(root).usage()
 

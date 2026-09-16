@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def test_language_choices_map_to_vision_tags() -> None:
     assert vision_language_codes("nl-NL") == ("nl-NL",)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang helper fixture")
 def test_adapter_sends_json_and_parses_the_native_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -62,6 +64,7 @@ json.dump({"engine": "apple-vision", "frames": frames}, sys.stdout)
     assert frames[0].observations[0].bounding_box.y == pytest.approx(0.2)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang helper fixture")
 def test_adapter_surfaces_native_json_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -81,6 +84,7 @@ raise SystemExit(2)
         MacVisionOCR(helper).recognize_images([image])
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang helper fixture")
 def test_adapter_rejects_malformed_success_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

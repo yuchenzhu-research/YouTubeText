@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from dataclasses import replace
 from pathlib import Path
@@ -45,8 +46,9 @@ def test_complete_transcript_round_trips_with_private_permissions(tmp_path):
 
     files = list(cache.root.glob("*.json"))
     assert len(files) == 1
-    assert stat.S_IMODE(cache.root.stat().st_mode) == 0o700
-    assert stat.S_IMODE(files[0].stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(cache.root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(files[0].stat().st_mode) == 0o600
 
 
 def test_cache_key_ignores_output_directory_but_tracks_processing_options(tmp_path):

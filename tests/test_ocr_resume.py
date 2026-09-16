@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import stat
 from collections.abc import Sequence
 from pathlib import Path
@@ -421,9 +422,10 @@ async def test_ocr_checkpoint_contains_no_temporary_paths_or_cookie_secrets(
         for checkpoint in checkpoint_json_files(root)
     )
     checkpoints = checkpoint_json_files(root)
-    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in checkpoints)
-    assert stat.S_IMODE(checkpoints[0].parent.stat().st_mode) == 0o700
-    assert stat.S_IMODE(checkpoints[0].parent.parent.stat().st_mode) == 0o700
+    if os.name != "nt":
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in checkpoints)
+        assert stat.S_IMODE(checkpoints[0].parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(checkpoints[0].parent.parent.stat().st_mode) == 0o700
     assert cookie_secret not in serialized
     for item in first_sample:
         assert str(item.path) not in serialized

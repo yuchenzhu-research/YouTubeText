@@ -59,7 +59,7 @@ async def test_injected_download_runner_can_return_file(tmp_path):
     assert seen["options"]["logger"] is not None
     assert seen["options"]["continuedl"] is True
     assert seen["options"]["nopart"] is False
-    assert seen["options"]["outtmpl"].endswith("/audio.%(ext)s")
+    assert Path(seen["options"]["outtmpl"]).name == "audio.%(ext)s"
 
 
 @pytest.mark.asyncio

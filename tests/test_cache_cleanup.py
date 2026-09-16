@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 import youtubetext.resume as resume_module
 from youtubetext._locking import open_file_lock
 from youtubetext.resume import CacheCleanup, LocalResumeStore
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-descriptor cleanup")
 def test_clear_incomplete_removes_task_trees_and_preserves_transcripts(
     tmp_path: Path,
 ) -> None:
@@ -47,6 +51,7 @@ def test_clear_incomplete_removes_task_trees_and_preserves_transcripts(
     assert transcript.read_bytes() == transcript_payload
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-descriptor cleanup")
 def test_clear_incomplete_skips_non_task_names_and_task_symlinks(
     tmp_path: Path,
 ) -> None:
@@ -72,6 +77,7 @@ def test_clear_incomplete_skips_non_task_names_and_task_symlinks(
     assert outside_file.read_bytes() == outside_payload
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-descriptor cleanup")
 def test_clear_incomplete_does_not_follow_tasks_root_symlink(
     tmp_path: Path,
 ) -> None:
@@ -90,6 +96,7 @@ def test_clear_incomplete_does_not_follow_tasks_root_symlink(
     assert outside_state.read_bytes() == b"preserve-outside-task"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-descriptor cleanup")
 def test_clear_incomplete_does_not_follow_locks_root_symlink(
     tmp_path: Path,
 ) -> None:
@@ -110,6 +117,7 @@ def test_clear_incomplete_does_not_follow_locks_root_symlink(
     assert not (outside_locks / f"{task_key}.lock").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-descriptor cleanup")
 def test_clear_incomplete_counts_locked_task_as_active(tmp_path: Path) -> None:
     root = tmp_path / "resume"
     task_key = "d" * 64
@@ -132,6 +140,7 @@ def test_clear_incomplete_counts_locked_task_as_active(tmp_path: Path) -> None:
     assert (task / "state.bin").read_bytes() == payload
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-descriptor cleanup")
 def test_clear_incomplete_does_not_follow_lock_symlink(tmp_path: Path) -> None:
     root = tmp_path / "resume"
     task_key = "f" * 64
@@ -153,6 +162,7 @@ def test_clear_incomplete_does_not_follow_lock_symlink(tmp_path: Path) -> None:
     assert outside_lock.read_bytes() == outside_payload
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-descriptor cleanup")
 def test_clear_incomplete_counts_task_when_deletion_fails(
     tmp_path: Path,
     monkeypatch,
@@ -189,3 +199,22 @@ def test_clear_incomplete_does_not_create_missing_storage(tmp_path: Path) -> Non
         "failed_tasks": 0,
     }
     assert not root.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cleanup safety fallback")
+def test_windows_clear_incomplete_refuses_to_delete_task_state(tmp_path: Path) -> None:
+    root = tmp_path / "resume"
+    task = root / "tasks" / ("a" * 64)
+    task.mkdir(parents=True)
+    state = task / "state.json"
+    state.write_bytes(b"unfinished task")
+    transcript = root / "transcripts" / "completed.json"
+    transcript.parent.mkdir()
+    transcript.write_bytes(b"completed transcript")
+
+    cleanup = LocalResumeStore(root).clear_incomplete()
+
+    assert cleanup == CacheCleanup(root=root, failed_tasks=1)
+    assert state.read_bytes() == b"unfinished task"
+    assert transcript.read_bytes() == b"completed transcript"
+    assert not (root / "locks").exists()
