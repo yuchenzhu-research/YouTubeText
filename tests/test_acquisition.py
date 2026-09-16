@@ -697,9 +697,22 @@ def test_ocr_quality_rejects_dense_screen_interface_text():
 
 
 def test_ocr_quality_keeps_distinct_spoken_caption_lines():
+    lines = (
+        "今天的新聞從城市交通開始",
+        "政府公布了下一階段的安排",
+        "居民正在討論新的政策",
+        "專家提醒大家留意天氣變化",
+        "接下來我們看市場的反應",
+        "目前的資料仍有一些不確定性",
+        "這項研究提出了不同的解釋",
+        "第一批志願者已經到達現場",
+        "相關部門將在晚些時候回應",
+        "最後我們回顧今天的重點",
+        "謝謝收看我們明天再見",
+    )
     segments = tuple(
-        TranscriptSegment(second, second + 1, f"字幕内容正在讲述当天新闻{second}")
-        for second in range(11)
+        TranscriptSegment(second, second + 1, line)
+        for second, line in enumerate(lines)
     )
 
     assert _ocr_is_usable(segments, 31)
@@ -717,8 +730,8 @@ def test_hybrid_keeps_asr_segment_that_spans_both_sides_of_ocr():
     ]
 
 
-def test_hybrid_drops_asr_segment_almost_fully_covered_by_ocr():
+def test_hybrid_preserves_distinct_asr_segment_almost_fully_covered_by_ocr():
     visible = (TranscriptSegment(0, 10, "visible caption"),)
     speech = (TranscriptSegment(1, 9, "duplicate speech"),)
 
-    assert merge_ocr_and_asr(visible, speech) == visible
+    assert merge_ocr_and_asr(visible, speech) == (*visible, *speech)

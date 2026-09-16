@@ -605,6 +605,8 @@ def _ocr_is_usable(
     # transcript, so auto/hybrid must fall back to the audio track.
     if duration and characters / duration > 30:
         return False
+    if _looks_like_repeated_screen_label(normalized):
+        return False
     if not duration or duration <= 10:
         return characters >= 4
     covered_ratio = _covered_duration(segments, duration) / duration
@@ -622,6 +624,32 @@ def _ocr_is_usable(
         and characters >= minimum_characters
         and unique_ratio >= 0.4
         and covered_ratio >= 0.35
+    )
+
+
+def _looks_like_repeated_screen_label(texts: Sequence[str]) -> bool:
+    """Reject short changing suffixes on an otherwise fixed screen label.
+
+    A counter or slide index can make every OCR segment unique while still
+    containing almost no spoken content. This is deliberately a narrow signal:
+    ordinary captions with a shared speaker label and varied sentences pass.
+    """
+
+    if len(texts) < 5:
+        return False
+    prefix = texts[0]
+    for value in texts[1:]:
+        matching = 0
+        for left, right in zip(prefix, value):
+            if left != right:
+                break
+            matching += 1
+        prefix = prefix[:matching]
+        if len(prefix) < 6:
+            return False
+    return all(
+        len(prefix) / len(value) >= 0.7 and len(value) - len(prefix) <= 6
+        for value in texts
     )
 
 
@@ -741,12 +769,12 @@ def merge_ocr_and_asr(
     ocr_segments: Sequence[TranscriptSegment],
     asr_segments: Sequence[TranscriptSegment],
 ) -> tuple[TranscriptSegment, ...]:
-    """Prefer visible captions without discarding speech that spans a real gap."""
+    """Prefer matching visible captions without losing different spoken content."""
 
     merged = list(ocr_segments)
     for speech in asr_segments:
         duration = speech.end_seconds - speech.start_seconds
-        overlaps = (
+        overlaps = tuple(
             TranscriptSegment(
                 max(speech.start_seconds, visible.start_seconds),
                 min(speech.end_seconds, visible.end_seconds),
@@ -756,9 +784,24 @@ def merge_ocr_and_asr(
             if max(speech.start_seconds, visible.start_seconds)
             < min(speech.end_seconds, visible.end_seconds)
         )
-        covered = _covered_duration(tuple(overlaps), speech.end_seconds)
+        covered = _covered_duration(overlaps, speech.end_seconds)
         coverage = covered / duration if duration > 0 else 0.0
-        if coverage < 0.8:
+        visible_texts: list[str] = []
+        previous_normalized = ""
+        for visible in sorted(
+            overlaps,
+            key=lambda segment: (segment.start_seconds, segment.end_seconds),
+        ):
+            normalized = normalize_caption(visible.text)
+            if normalized != previous_normalized:
+                visible_texts.append(visible.text)
+                previous_normalized = normalized
+        visible_text = " ".join(visible_texts)
+        # Similar wording can differ on a negation or number; preserve speech
+        # unless the covered visible text is the same after normalization.
+        if coverage < 0.8 or normalize_caption(speech.text) != normalize_caption(
+            visible_text
+        ):
             merged.append(speech)
     merged.sort(key=lambda segment: (segment.start_seconds, segment.end_seconds))
     return tuple(merged)
