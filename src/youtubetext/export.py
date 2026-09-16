@@ -10,6 +10,21 @@ from pathlib import Path
 
 from .domain import OutputFiles, Transcript, TranscriptSegment
 
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+    "com¹",
+    "com²",
+    "com³",
+    "lpt¹",
+    "lpt²",
+    "lpt³",
+}
+
 
 def format_timestamp(seconds: float) -> str:
     value = max(0, int(seconds))
@@ -21,10 +36,19 @@ def format_timestamp(seconds: float) -> str:
 
 
 def safe_directory_name(value: str, *, fallback: str = "untitled") -> str:
+    normalized = _portable_name(value)
+    if not normalized:
+        normalized = _portable_name(fallback) or "untitled"
+    if normalized.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_NAMES:
+        normalized = f"_{normalized}"
+    return normalized
+
+
+def _portable_name(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(value or ""))
-    normalized = re.sub(r"[\x00-\x1f/:\\]", "-", normalized)
+    normalized = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "-", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip(" .-")
-    return (normalized[:100].strip() or fallback)
+    return normalized[:100].rstrip(" .-")
 
 
 def _segment_markdown(segment: TranscriptSegment) -> str:

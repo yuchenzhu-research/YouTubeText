@@ -15,6 +15,7 @@ from youtubetext.export import (
     render_clean_markdown,
     render_markdown,
     render_text,
+    safe_directory_name,
 )
 
 
@@ -77,6 +78,33 @@ def test_export_writes_four_atomic_outputs(tmp_path):
     assert payload["extraction_method"] == "apple-vision-ocr"
     assert payload["segment_count"] == 2
     assert not list(output.directory.glob("*.partial"))
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    (
+        ("CON", "_CON"),
+        ("nul.txt", "_nul.txt"),
+        ("LPT9.", "_LPT9"),
+        ("  report. ", "report"),
+        ("..", "untitled"),
+        ("文釗談古論今", "文釗談古論今"),
+    ),
+)
+def test_safe_directory_name_is_portable_to_windows(value, expected):
+    assert safe_directory_name(value) == expected
+
+
+def test_safe_directory_name_removes_every_windows_invalid_character():
+    name = safe_directory_name('Episode: <one> "draft" / \\ | ? *')
+
+    assert name
+    assert not set('<>:"/\\|?*').intersection(name)
+    assert not name.endswith((" ", "."))
+
+
+def test_safe_directory_name_sanitizes_reserved_fallback():
+    assert safe_directory_name("...", fallback="AUX") == "_AUX"
 
 
 def test_repeated_atomic_writes_leave_no_shared_partial_file(tmp_path):
