@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "youtubetext"
 version = "0.1.0"
-description = "Turn YouTube and Bilibili videos into clean transcripts on macOS."
+description = "A macOS and Windows terminal tool for clean YouTube and Bilibili transcripts."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [

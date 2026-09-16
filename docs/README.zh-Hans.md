@@ -2,7 +2,7 @@
 
 [English](../README.md) | [繁體中文](README.zh-Hant.md) | 简体中文 | [Español](README.es.md) | [日本語](README.ja.md)
 
-YouTubeText 是一款适用于 Apple Silicon Mac 的终端工具，可将 YouTube 和
+YouTubeText 是一款适用于 Apple Silicon macOS 与 Windows x64 的终端工具，可将 YouTube 和
 Bilibili 视频转换为干净且带时间戳的文字稿。它会导出一份带时间戳的
 Markdown 文件、一份不含时间戳的干净 Markdown 文件、一份文本文件，以及
 结构化元数据。
@@ -15,10 +15,10 @@ Ollama 或云端 AI API。
 - 在同一个命令中提交一个 URL 或一列 URL 队列。
 - 检测 YouTube 和 Bilibili 来源并读取其元数据。
 - 有可用字幕时，优先采用平台提供的人工或自动字幕。
-- 没有可用的平台字幕轨时，使用 Apple Vision 读取内嵌字幕。
-- OCR 无法使用时，回退到本地 MLX Whisper 语音识别。
+- 没有可用的平台字幕轨时，在 macOS 使用 Apple Vision、在 Windows 使用 RapidOCR 读取内嵌字幕。
+- OCR 无法使用时，在 macOS 回退到本地 MLX Whisper、在 Windows 回退到 faster-whisper 语音识别。
 - 同时导出带时间戳和干净、不含时间戳的 Markdown 文字稿。
-- 根据 Mac 的物理内存，自动选择安全的 URL 并行数。
+- 根据物理内存，以及 Windows 上的 CPU 容量，自动选择 URL 并行数。
 - 复用已完成的文字稿、续传中断的媒体下载，以及复用已完成的 OCR 批次。
 - 下载任何字幕或媒体文件前，使用 `--plan` 检查 URL。
 - 隔离失败：单个错误 URL 不会取消队列中的其他任务。
@@ -31,7 +31,7 @@ URL 队列
        ├─ 可用的平台字幕 ─────────────────→ 清理字幕段落 ───────→ 导出
        └─ 无可用字幕
             ├─ --resume 缓存命中 ─────────────────────────────→ 导出
-            └─ 缓存未命中或未启用断点续跑 → 分析视频 → Vision OCR
+            └─ 缓存未命中或未启用断点续跑 → 分析视频 → 本地 OCR
                                                         ├─ 可用 → 导出
                                                         └─ 不可用 → Whisper → 导出
 ```
@@ -43,20 +43,19 @@ Whisper 媒体保存在受监管的单次运行临时目录中，并在运行结
 
 ## 系统要求
 
-- Apple Silicon Mac (`arm64`)
-- macOS 13 或更高版本
+- Apple Silicon Mac (`arm64`) 与 macOS 13 或更高版本，或 64 位 x86 Windows
 - Python 3.11–3.14
-- FFmpeg
-- Xcode Command Line Tools，用于构建 Apple Vision OCR 辅助程序
+- `PATH` 中可用的 FFmpeg
+- 仅 macOS：用于构建 Apple Vision OCR 辅助程序的 Xcode Command Line Tools
 - 建议使用 `uv`
 
-如果尚未安装 FFmpeg，请使用 Homebrew 安装：
+在 macOS 上，如果尚未安装 FFmpeg，请使用 Homebrew 安装：
 
 ```bash
 brew install ffmpeg
 ```
 
-如果尚未安装 Apple 命令行工具，请运行：
+在 macOS 上，如果尚未安装 Apple 命令行工具，请运行：
 
 ```bash
 xcode-select --install
@@ -64,8 +63,10 @@ xcode-select --install
 
 ## 安装
 
-当前支持的安装方式是签出源代码。YouTubeText 尚未发布为 PyPI 软件包或预构建
+两个平台当前支持的安装方式都是签出源代码。YouTubeText 尚未发布为 PyPI 软件包或预构建
 wheel。
+
+在 macOS 上运行：
 
 ```bash
 git clone https://github.com/yuchenzhu-research/YouTubeText.git
@@ -79,10 +80,20 @@ cd YouTubeText
 git clone git@github.com:yuchenzhu-research/YouTubeText.git
 ```
 
-安装程序会创建 `.venv`、安装 Python 依赖项，并构建 Apple Vision OCR 辅助程序。
-它不会使用 `sudo`，也不会自动安装 Homebrew。
+在 Windows x64 上，先安装 64 位 Python 和 FFmpeg，将 FFmpeg 的 `bin` 目录
+加入 `PATH`，然后在 PowerShell 运行：
 
-安装后检查本地环境：
+```powershell
+git clone https://github.com/yuchenzhu-research/YouTubeText.git
+Set-Location YouTubeText
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+两个安装程序都会创建 `.venv` 并安装对应平台的 Python 依赖项。macOS 安装程序
+还会构建 Apple Vision OCR 辅助程序；Windows 安装程序不使用 Swift。两者都不会
+安装 FFmpeg。macOS 安装程序不会使用 `sudo`，也不会自动安装 Homebrew。
+
+在 macOS 安装后检查本地环境：
 
 ```bash
 ./.venv/bin/youtubetext doctor
@@ -125,6 +136,20 @@ git clone git@github.com:yuchenzhu-research/YouTubeText.git
 ./.venv/bin/youtubetext --help
 ```
 
+在 Windows 上，请从 PowerShell 使用 `.venv\Scripts` 中的可执行文件，例如：
+
+```powershell
+.\.venv\Scripts\youtubetext.exe doctor
+.\.venv\Scripts\youtubetext.exe "https://www.youtube.com/watch?v=VIDEO_ID"
+.\.venv\Scripts\youtubetext.exe URL_1 URL_2 --jobs 2
+.\.venv\Scripts\youtubetext.exe URL --plan
+.\.venv\Scripts\youtubetext.exe URL --resume
+.\.venv\Scripts\youtubetext.exe cache
+```
+
+下文其余命令示例使用 macOS 的可执行文件路径。在 Windows 上，请将
+`./.venv/bin/youtubetext` 替换为 `.\.venv\Scripts\youtubetext.exe`。
+
 ## 执行前计划
 
 使用 `--plan` 检查全新运行将采取的操作；此时尚未下载任何字幕或媒体文件：
@@ -159,19 +184,21 @@ git clone git@github.com:yuchenzhu-research/YouTubeText.git
 ```
 
 YouTubeText 仍会先检查平台是否提供了新的字幕。缓存未命中时，yt-dlp 可继续
-中断的 `.part` 下载；已完成的媒体文件会直接重复使用；Apple Vision 则会在
+中断的 `.part` 下载；已完成的媒体文件会直接重复使用；本地 OCR 引擎则会在
 每批最多 32 帧全部成功识别后保存原始 OCR 观察结果。含有帧错误的批次不会写入
 检查点，而会在下次运行时重试。采样图像会在识别后逐批删除；如果有写入检查点，
 则会先安全保存再删除。Whisper 推理目前还不能从中间位置断点续跑。
 
-已完成的结构化文字稿存储在：
+在 macOS 上，已完成的结构化文字稿存储在：
 
 ```text
 ~/Library/Caches/YouTubeText/transcripts/
 ```
 
-未完成的任务存储在同级的 `tasks/` 目录中。目录和文件分别以 `0700` 和 `0600`
-权限限制为仅当前用户可访问。两个进程请求相同任务时会共用一把锁：一个执行
+在 Windows 上，缓存位于用户的平台缓存目录；运行 `youtubetext cache` 可查看
+准确位置。两个平台的未完成任务都存储在同级的 `tasks/` 目录中。在 macOS 上，
+目录和文件使用 `0700` 和 `0600` 权限；Windows 则使用其文件系统权限。
+两个进程请求相同任务时会共用一把锁：一个执行
 工作，另一个等待并重复使用其结果。匿名请求和不同的 Cookie 文件会使用各自
 独立的缓存范围。
 
@@ -182,15 +209,16 @@ YouTubeText 仍会先检查平台是否提供了新的字幕。缓存未命中�
 ./.venv/bin/youtubetext cache --json
 ```
 
-只移除失败或中断任务的媒体和 OCR 检查点，同时保留所有已完成的文字稿：
+在 macOS 上，只移除失败或中断任务的媒体和 OCR 检查点，同时保留所有已完成的文字稿：
 
 ```bash
 ./.venv/bin/youtubetext cache clear-incomplete
 ```
 
 运行中且已锁定的任务会被跳过。已移除的临时媒体无法恢复，但可以从原始 URL
-重新下载。若要移除包括已完成文字稿在内的所有内容，请手动删除
-`~/Library/Caches/YouTubeText/`。
+重新下载。在 Windows 上，`cache clear-incomplete` 暂不支持，不会删除任务数据；
+只读的 `cache` 和 `cache --json` 仍可使用。若要在 macOS 移除包括已完成文字稿
+在内的所有内容，请手动删除 `~/Library/Caches/YouTubeText/`。
 
 ## 身份验证与 Cookie
 
@@ -212,7 +240,8 @@ YouTubeText 仍会先检查平台是否提供了新的字幕。缓存未命中�
 由于浏览器名称无法可靠识别当前使用的账号，`--cookies-from-browser` 不能与
 `--resume` 一起使用。需要同时使用身份验证和断点续跑时，请使用
 `--cookies-file`。Safari 可能需要在 macOS“隐私与安全性”设置中，授予终端
-“完全磁盘访问权限”。
+“完全磁盘访问权限”。Safari 示例仅适用于 macOS；在 Windows 上请选择
+yt-dlp 支持且已安装的浏览器。
 
 ## 模式
 
@@ -238,8 +267,9 @@ YouTubeText 仍会先检查平台是否提供了新的字幕。缓存未命中�
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
 
-选择 `auto` 时，Apple Vision 会利用标题和作者上下文设置识别语言的优先顺序。
-Whisper 会自行检测口语语言。
+在 macOS 选择 `auto` 时，Apple Vision 会利用标题和作者上下文设置识别语言的
+优先顺序。Windows RapidOCR 目前使用默认模型，不会因 `--language` 切换
+OCR 模型。两种 Whisper 引擎都能自动检测口语语言。
 
 另行设置一份按优先顺序排列的平台字幕语言列表：
 
@@ -270,7 +300,7 @@ YouTubeText-output/
 
 ## 并行与资源控制
 
-`--jobs 0` 是默认值，会根据物理内存推导 URL 并行数：
+`--jobs 0` 是默认值，会根据物理内存推导 URL 并行数上限：
 
 | 物理内存 | 自动 URL 任务数 |
 | --- | ---: |
@@ -279,11 +309,12 @@ YouTubeText-output/
 | 24–39 GiB | 3 |
 | 40 GiB 或更多 | 4 |
 
-使用 `--jobs 1` 到 `--jobs 8` 覆盖此设置。网络工作最多使用四个槽位，Apple
-Vision OCR 最多使用两个，而 Whisper 会串行运行，以避免统一内存和 Metal
-资源争用。
+在 Windows 上，CPU 容量可能进一步降低自动并行数。使用 `--jobs 1` 到
+`--jobs 8` 覆盖此设置。网络工作最多使用四个槽位；macOS 的 Apple Vision OCR
+最多使用两个，Windows 的 RapidOCR 使用一个。两个平台都会串行运行 Whisper，
+以限制内存和计算资源争用。
 
-OCR 通常每秒采样一帧，并将长视频限制为最多 2,400 帧。Vision 每批接收最多
+OCR 通常每秒采样一帧，并将长视频限制为最多 2,400 帧。本地 OCR 引擎每批接收最多
 32 个裁剪帧，并且这些图像在识别后始终逐批移除。使用 `--resume` 时，全部
 成功识别的批次会在删除前写入检查点；含有帧错误的批次不会写入检查点，并会在
 下次运行时重试。检查点会存储时间戳、内容哈希和原始文本框，绝不会保留帧图像
@@ -292,8 +323,12 @@ OCR 通常每秒采样一帧，并将长视频限制为最多 2,400 帧。Vision
 ## Whisper 模型
 
 Whisper 只会在字幕和内嵌字幕均不可用，或选择 `whisper` / `hybrid` 模式时运行。
-模型会在首次使用时下载，然后从本地模型缓存中复用。标准 Hugging Face 缓存中
-已有的兼容权重也会复用。
+模型会在首次使用时下载，然后从本地模型缓存中复用。在 macOS 上，标准
+Hugging Face 缓存中已有的兼容 MLX 权重也会复用。Windows 使用 faster-whisper
+和独立缓存中的 CTranslate2 权重。
+
+下表的下载量和内存估计仅适用于 macOS 的 MLX 引擎；Windows 的模型大小和
+运行时内存需求可能不同：
 
 | 模型 | 近似下载大小 | 近似运行时内存 |
 | --- | ---: | ---: |
@@ -302,7 +337,9 @@ Whisper 只会在字幕和内嵌字幕均不可用，或选择 `whisper` / `hybr
 | `large-v3-turbo` | 1.61 GB | 6 GiB |
 
 自动选择会在内存较少的 Mac 上使用 `small`，在至少有 16 GiB 内存的 Mac 上
-使用 `large-v3-turbo`。使用 `--whisper-model` 可覆盖此设置。
+使用 `large-v3-turbo`；Windows 默认使用 `small`。使用 `--whisper-model`
+可覆盖此设置。Windows 的 doctor 会检查后端是否可用，但目前不会检查
+CTranslate2 模型缓存。
 
 ## 开发与架构
 
@@ -318,22 +355,29 @@ Whisper 只会在字幕和内嵌字幕均不可用，或选择 `whisper` / `hybr
 ./scripts/dev.sh tests/test_acquisition.py -q
 ```
 
+在 Windows 上，请从 PowerShell 运行开发脚本：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
+```
+
 主要模块：
 
 - `sources/`：YouTube/Bilibili 元数据和平台字幕。
 - `planning.py`：只读的执行前路径和下载要求。
 - `media.py`：可断点续跑的媒体下载和有界帧采样。
 - `resume.py`：文字稿重复使用、任务锁、OCR 检查点和任务清理。
-- `ocr/`：Apple Vision 调用和内嵌字幕组装。
-- `asr/`：MLX Whisper、模型选择和模型缓存重复使用。
+- `ocr/`：Apple Vision 或 RapidOCR 与内嵌字幕组装。
+- `asr/`：MLX Whisper 或 faster-whisper 与本地模型选择。
 - `acquisition.py`：字幕/OCR/Whisper 的权威路由策略。
-- `runtime.py`：Mac 资源检测和保持顺序的多 URL 调度。
+- `runtime.py`：主机资源检测和保持顺序的多 URL 调度。
 - `export.py`：Markdown、TXT 和 JSON 输出的分组原子写入。
 - `cli.py`：终端界面。
 
 ## 当前限制
 
-- 仅支持 Apple Silicon macOS。
+- macOS Apple Silicon 与 Windows x64 已通过自动化 CI 测试；实体 Windows 电脑上的真实视频端到端验证仍待完成。
+- Windows 的 `cache clear-incomplete` 尚未实现。
 - 平台访问取决于 yt-dlp，并可能受到地区、账号、Cookie 或平台变更的影响。
 - Apple Vision OCR 已针对画面底部附近的字幕进行优化。其他布局或高度风格化的
   文字可能需要使用 Whisper 模式。

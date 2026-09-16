@@ -2,8 +2,8 @@
 
 English | [繁體中文](docs/README.zh-Hant.md) | [简体中文](docs/README.zh-Hans.md) | [Español](docs/README.es.md) | [日本語](docs/README.ja.md)
 
-YouTubeText is a terminal tool for Apple Silicon Macs that turns YouTube and
-Bilibili videos into clean, timestamped transcripts. It exports a timestamped
+YouTubeText is a terminal tool for Apple Silicon macOS and Windows x64 that turns
+YouTube and Bilibili videos into clean, timestamped transcripts. It exports a timestamped
 Markdown file, a clean Markdown file without timestamps, a text file, and
 structured metadata.
 
@@ -15,10 +15,13 @@ arguments, or require an LLM, Ollama, or a cloud AI API.
 - Submit one URL or a queue of URLs in the same command.
 - Detect YouTube and Bilibili sources and read their metadata.
 - Prefer manual or automatic platform captions when available.
-- Read burned-in subtitles with Apple Vision when no platform track is usable.
-- Fall back to local MLX Whisper speech recognition when OCR is not usable.
+- Read burned-in subtitles with Apple Vision on macOS or RapidOCR on Windows
+  when no platform track is usable.
+- Fall back to local MLX Whisper on macOS or faster-whisper on Windows when OCR
+  is not usable.
 - Export both timestamped and clean, no-timestamp Markdown transcripts.
-- Automatically choose safe URL concurrency from the Mac's physical memory.
+- Automatically choose URL concurrency from physical memory and, on Windows,
+  CPU capacity.
 - Reuse completed transcripts, resume interrupted media downloads, and reuse
   completed OCR batches.
 - Inspect a URL with `--plan` before downloading any subtitle or media file.
@@ -32,7 +35,7 @@ URL queue
        ├─ Usable platform caption ─────────────→ Clean cues ─────────→ Export
        └─ No usable caption
             ├─ --resume cache hit ─────────────────────────────→ Export
-            └─ cache miss or resume off → analysis video → Vision OCR
+            └─ cache miss or resume off → analysis video → local OCR
                                                             ├─ usable → Export
                                                             └─ unusable → Whisper → Export
 ```
@@ -45,20 +48,19 @@ interruption, and removed after success.
 
 ## Requirements
 
-- Apple Silicon Mac (`arm64`)
-- macOS 13 or later
+- Apple Silicon Mac (`arm64`) with macOS 13 or later, or 64-bit x86 Windows
 - Python 3.11–3.14
-- FFmpeg
-- Xcode Command Line Tools, used to build the Apple Vision OCR helper
+- FFmpeg available on `PATH`
+- On macOS only: Xcode Command Line Tools to build the Apple Vision OCR helper
 - `uv` is recommended
 
-Install FFmpeg with Homebrew if it is missing:
+On macOS, install FFmpeg with Homebrew if it is missing:
 
 ```bash
 brew install ffmpeg
 ```
 
-Install Apple's command-line tools if they are missing:
+On macOS, install Apple's command-line tools if they are missing:
 
 ```bash
 xcode-select --install
@@ -66,8 +68,10 @@ xcode-select --install
 
 ## Installation
 
-The supported installation method is currently a source checkout. YouTubeText
-is not yet published as a PyPI package or prebuilt wheel.
+The supported installation method on both platforms is currently a source
+checkout. YouTubeText is not yet published as a PyPI package or prebuilt wheel.
+
+On macOS, run:
 
 ```bash
 git clone https://github.com/yuchenzhu-research/YouTubeText.git
@@ -81,10 +85,21 @@ If GitHub SSH is already configured:
 git clone git@github.com:yuchenzhu-research/YouTubeText.git
 ```
 
-The installer creates `.venv`, installs Python dependencies, and builds the
-Apple Vision OCR helper. It does not use `sudo` or install Homebrew automatically.
+On Windows x64, install 64-bit Python and FFmpeg first, add FFmpeg's `bin`
+directory to `PATH`, then run in PowerShell:
 
-Check the local environment after installation:
+```powershell
+git clone https://github.com/yuchenzhu-research/YouTubeText.git
+Set-Location YouTubeText
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+Both installers create `.venv` and install the host-specific Python dependencies.
+The macOS installer also builds the Apple Vision OCR helper; the Windows installer
+does not use Swift. Neither installer installs FFmpeg. The macOS installer does not
+use `sudo` or install Homebrew automatically.
+
+Check the local environment after installation on macOS:
 
 ```bash
 ./.venv/bin/youtubetext doctor
@@ -127,6 +142,20 @@ Show every option:
 ./.venv/bin/youtubetext --help
 ```
 
+On Windows, use the executable in `.venv\Scripts` from PowerShell; for example:
+
+```powershell
+.\.venv\Scripts\youtubetext.exe doctor
+.\.venv\Scripts\youtubetext.exe "https://www.youtube.com/watch?v=VIDEO_ID"
+.\.venv\Scripts\youtubetext.exe URL_1 URL_2 --jobs 2
+.\.venv\Scripts\youtubetext.exe URL --plan
+.\.venv\Scripts\youtubetext.exe URL --resume
+.\.venv\Scripts\youtubetext.exe cache
+```
+
+The remaining command examples use the macOS executable path. On Windows,
+replace `./.venv/bin/youtubetext` with `.\.venv\Scripts\youtubetext.exe`.
+
 ## Preflight plan
 
 Use `--plan` to inspect what a fresh run would do before any subtitle or media
@@ -166,20 +195,22 @@ Enable reusable local state explicitly:
 
 YouTubeText still checks the platform for a newly available caption first. On a
 cache miss, yt-dlp can continue an interrupted `.part` download; a completed
-media file is reused directly; and Apple Vision saves raw OCR observations after
+media file is reused directly; and the local OCR backend saves raw observations after
 each successfully recognized batch of up to 32 frames. A batch containing frame
 errors is not checkpointed and is retried on the next run. Sampled images are
 deleted batch by batch after recognition; when a checkpoint is written, it is
 saved before deletion. Whisper inference cannot yet resume from the middle.
 
-Completed structured transcripts are stored under:
+On macOS, completed structured transcripts are stored under:
 
 ```text
 ~/Library/Caches/YouTubeText/transcripts/
 ```
 
-Incomplete tasks are stored in the sibling `tasks/` directory. Directories and
-files are restricted to the current user with `0700` and `0600` permissions. Two
+On Windows, the cache is in the user's platform cache directory; run
+`youtubetext cache` to see its exact location. Incomplete tasks are stored in a
+sibling `tasks/` directory on either platform. On macOS, directories and files
+use `0700` and `0600` permissions; Windows uses its own filesystem permissions. Two
 processes requesting the same task use one lock: one performs the work and the
 other waits to reuse its result. Anonymous requests and different cookie files
 use separate cache scopes.
@@ -191,16 +222,19 @@ Inspect cache usage without modifying it:
 ./.venv/bin/youtubetext cache --json
 ```
 
-Remove only failed or interrupted task media and OCR checkpoints while retaining
-all completed transcripts:
+On macOS, remove only failed or interrupted task media and OCR checkpoints while
+retaining all completed transcripts:
 
 ```bash
 ./.venv/bin/youtubetext cache clear-incomplete
 ```
 
 Active, locked tasks are skipped. Removed temporary media cannot be recovered,
-but it can be downloaded again from the original URL. To remove everything,
-including completed transcripts, delete `~/Library/Caches/YouTubeText/` manually.
+but it can be downloaded again from the original URL. On Windows,
+`cache clear-incomplete` is not yet supported and does not delete task data;
+`cache` and `cache --json` remain read-only and available. To remove everything
+on macOS, including completed transcripts, delete
+`~/Library/Caches/YouTubeText/` manually.
 
 ## Authentication and cookies
 
@@ -224,6 +258,8 @@ Because a browser name cannot reliably identify the active account,
 `--cookies-from-browser` cannot be combined with `--resume`. Use
 `--cookies-file` when authentication and resume are both required. Safari may
 need Full Disk Access for the terminal in macOS Privacy & Security settings.
+The Safari example is macOS-specific; on Windows, select an installed browser
+supported by yt-dlp.
 
 ## Modes
 
@@ -249,8 +285,10 @@ Force OCR, for example:
 auto, en, zh-Hans, zh-Hant, es, ja, ko, fr, de, pt, it, ru, ar, hi, vi
 ```
 
-Apple Vision uses title and author context to prioritize recognition languages
-when `auto` is selected. Whisper performs its own spoken-language detection.
+On macOS, Apple Vision uses title and author context to prioritize recognition
+languages when `auto` is selected. Windows RapidOCR currently uses its default
+model rather than switching OCR models for `--language`. Both
+Whisper backends can detect spoken language automatically.
 
 Set an ordered list of preferred platform-caption languages separately:
 
@@ -281,7 +319,7 @@ YouTubeText-output/
 
 ## Concurrency and resource control
 
-`--jobs 0` is the default and derives URL concurrency from physical memory:
+`--jobs 0` is the default and derives a memory-based URL concurrency ceiling:
 
 | Physical memory | Automatic URL jobs |
 | --- | ---: |
@@ -290,12 +328,13 @@ YouTubeText-output/
 | 24–39 GiB | 3 |
 | 40 GiB or more | 4 |
 
-Override it with `--jobs 1` through `--jobs 8`. Network work uses at most four
-slots, Apple Vision OCR uses at most two, and Whisper is serialized to avoid
-unified-memory and Metal contention.
+On Windows, CPU capacity can lower the automatic URL count further. Override it
+with `--jobs 1` through `--jobs 8`. Network work uses at most four slots;
+Apple Vision OCR uses at most two on macOS, while RapidOCR uses one on Windows.
+Whisper is serialized on both platforms to limit memory and compute contention.
 
 OCR normally samples one frame per second and caps long videos at 2,400 frames.
-Vision receives batches of up to 32 cropped frames, and those images are always
+The local OCR backend receives batches of up to 32 cropped frames, and those images are always
 removed batch by batch after recognition. With `--resume`, a successfully
 recognized batch is checkpointed before deletion; a batch containing frame errors
 is not checkpointed and will be retried on the next run. Checkpoints store
@@ -306,8 +345,12 @@ paths.
 
 Whisper runs only when captions and burned-in subtitles are unusable, or when
 `whisper` / `hybrid` mode is selected. A model is downloaded on first use and
-then reused from a local model cache. Compatible weights already present in the
-standard Hugging Face cache are reused as well.
+then reused from a local model cache. On macOS, compatible MLX weights already
+present in the standard Hugging Face cache are reused as well. Windows uses
+faster-whisper with CTranslate2 weights in a separate cache.
+
+The following download and memory estimates apply to the macOS MLX backend;
+Windows model sizes and runtime memory can differ:
 
 | Model | Approximate download | Approximate runtime memory |
 | --- | ---: | ---: |
@@ -316,7 +359,9 @@ standard Hugging Face cache are reused as well.
 | `large-v3-turbo` | 1.61 GB | 6 GiB |
 
 Automatic selection uses `small` on lower-memory Macs and `large-v3-turbo` on
-Macs with at least 16 GiB. Override it with `--whisper-model`.
+Macs with at least 16 GiB. Windows defaults to `small`. Override the choice
+with `--whisper-model`. The Windows doctor checks backend availability but does
+not yet inspect the CTranslate2 model cache.
 
 ## Development and architecture
 
@@ -332,22 +377,30 @@ Pass pytest arguments through the script when needed:
 ./scripts/dev.sh tests/test_acquisition.py -q
 ```
 
+On Windows, run the development script from PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
+```
+
 Primary modules:
 
 - `sources/`: YouTube/Bilibili metadata and platform captions.
 - `planning.py`: read-only preflight routes and download requirements.
 - `media.py`: resumable media downloads and bounded frame sampling.
 - `resume.py`: transcript reuse, task locks, OCR checkpoints, and task cleanup.
-- `ocr/`: Apple Vision invocation and burned-in caption assembly.
-- `asr/`: MLX Whisper, model selection, and model-cache reuse.
+- `ocr/`: Apple Vision or RapidOCR and burned-in caption assembly.
+- `asr/`: MLX Whisper or faster-whisper and local model selection.
 - `acquisition.py`: the authoritative captions/OCR/Whisper routing policy.
-- `runtime.py`: Mac resource detection and ordered multi-URL scheduling.
+- `runtime.py`: host resource detection and ordered multi-URL scheduling.
 - `export.py`: grouped atomic writes for Markdown, TXT, and JSON outputs.
 - `cli.py`: terminal interface.
 
 ## Current limitations
 
-- Only Apple Silicon macOS is supported.
+- macOS Apple Silicon and Windows x64 pass the automated CI suite. A real-video
+  end-to-end run on a physical Windows machine is still pending.
+- Windows `cache clear-incomplete` is not yet implemented.
 - Platform access depends on yt-dlp and may be affected by region, account,
   cookies, or platform changes.
 - Apple Vision OCR is optimized for subtitles near the bottom of the frame.
