@@ -229,7 +229,37 @@ def test_dev_syncs_dependencies_builds_helper_and_runs_tests(tmp_path: Path) -> 
     assert "Running tests" in result.stdout
 
 
-@pytest.mark.parametrize("name", ["install.sh", "dev.sh"])
+@pytest.mark.parametrize(
+    "name",
+    ["install.sh", "dev.sh", "install.ps1", "dev.ps1", "_windows.ps1"],
+)
 def test_scripts_do_not_request_sudo(name: str) -> None:
     source = (PROJECT_ROOT / "scripts" / name).read_text(encoding="utf-8")
     assert "sudo" not in source
+    assert "RunAs" not in source
+
+
+def test_windows_scripts_share_checked_platform_boundaries() -> None:
+    common = (PROJECT_ROOT / "scripts" / "_windows.ps1").read_text(
+        encoding="utf-8"
+    )
+    installer = (PROJECT_ROOT / "scripts" / "install.ps1").read_text(
+        encoding="utf-8"
+    )
+    developer = (PROJECT_ROOT / "scripts" / "dev.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "OSArchitecture" in common
+    assert "Python 3.11 through 3.14" in common
+    assert '@("3.14", "3.13", "3.12", "3.11")' in common
+    assert "Get-Command \"ffmpeg\"" in common
+    assert "Invoke-WebRequest" not in common + installer + developer
+    assert "Set-ExecutionPolicy" not in common + installer + developer
+    assert "_windows.ps1" in installer
+    assert '"sync", "--locked", "--no-dev", "--python"' in installer
+    assert ".venv\\Scripts\\youtubetext.exe" in installer
+    assert "build_vision_ocr" not in installer
+    assert "_windows.ps1" in developer
+    assert '"sync", "--locked", "--python"' in developer
+    assert '@("run", "--no-sync", "pytest")' in developer
