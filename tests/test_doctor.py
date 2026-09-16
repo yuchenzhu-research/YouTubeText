@@ -149,6 +149,7 @@ def test_executable_without_ffmpeg_protocol_is_not_reported_ready(tmp_path: Path
 
 def test_ffmpeg_probe_runs_version_command_with_bounded_timeout(monkeypatch) -> None:
     observed: list[tuple[list[str], dict[str, object]]] = []
+    binary = Path("/opt/ffmpeg/bin/ffmpeg")
 
     def run(command, **kwargs):
         observed.append((command, kwargs))
@@ -160,13 +161,13 @@ def test_ffmpeg_probe_runs_version_command_with_bounded_timeout(monkeypatch) -> 
 
     monkeypatch.setattr(doctor_module.subprocess, "run", run)
 
-    ok, detail = doctor_module._probe_ffmpeg_binary(Path("/opt/ffmpeg/bin/ffmpeg"))
+    ok, detail = doctor_module._probe_ffmpeg_binary(binary)
 
     assert ok
     assert "7.1" in detail
     assert observed == [
         (
-            ["/opt/ffmpeg/bin/ffmpeg", "-version"],
+            [str(binary), "-version"],
             {
                 "check": False,
                 "capture_output": True,
