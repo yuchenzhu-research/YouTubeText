@@ -53,6 +53,25 @@ async def test_scheduler_preserves_order_and_isolates_failures():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_generic_map_preserves_order_and_maps_errors():
+    scheduler = TaskScheduler(CapacityPlan.for_host(host(16), requested_jobs=2))
+
+    async def worker(value: int) -> str:
+        await asyncio.sleep(0.001 * (3 - value))
+        if value == 2:
+            raise ValueError("two failed")
+        return f"ok:{value}"
+
+    results = await scheduler.map(
+        [1, 2, 3],
+        worker,
+        lambda value, exc: f"error:{value}:{exc}",
+    )
+
+    assert results == ["ok:1", "error:2:two failed", "ok:3"]
+
+
+@pytest.mark.asyncio
 async def test_blocking_thread_survives_repeated_cancellation_until_it_stops():
     started = threading.Event()
     release = threading.Event()

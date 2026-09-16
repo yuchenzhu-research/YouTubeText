@@ -12,6 +12,8 @@ from .domain import TaskResult
 
 T = TypeVar("T")
 P = ParamSpec("P")
+ItemT = TypeVar("ItemT")
+ResultT = TypeVar("ResultT")
 
 
 async def run_blocking(
@@ -123,20 +125,34 @@ class TaskScheduler:
     def __init__(self, plan: CapacityPlan):
         self.plan = plan
 
+    async def map(
+        self,
+        items: Sequence[ItemT],
+        worker: Callable[[ItemT], Awaitable[ResultT]],
+        on_error: Callable[[ItemT, Exception], ResultT],
+    ) -> list[ResultT]:
+        """Map independent work with bounded concurrency and isolated errors."""
+
+        semaphore = asyncio.Semaphore(self.plan.task_slots)
+
+        async def guarded(item: ItemT) -> ResultT:
+            async with semaphore:
+                try:
+                    return await worker(item)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # one item must not cancel its siblings
+                    return on_error(item, exc)
+
+        return list(await asyncio.gather(*(guarded(item) for item in items)))
+
     async def run(
         self,
         urls: Sequence[str],
         worker: Callable[[str], Awaitable[TaskResult]],
     ) -> list[TaskResult]:
-        semaphore = asyncio.Semaphore(self.plan.task_slots)
-
-        async def guarded(url: str) -> TaskResult:
-            async with semaphore:
-                try:
-                    return await worker(url)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # one URL must not cancel its siblings
-                    return TaskResult(url=url, error=str(exc))
-
-        return list(await asyncio.gather(*(guarded(url) for url in urls)))
+        return await self.map(
+            urls,
+            worker,
+            lambda url, exc: TaskResult(url=url, error=str(exc)),
+        )

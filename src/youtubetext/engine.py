@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from .domain import TaskOptions, TaskResult, Transcript
 from .export import export_transcript
+from .planning import PlanResult, ProcessingPlan
 from .progress import ProgressEvent, ProgressSink, Stage, discard_progress
 from .runtime import CapacityPlan, ResourceGates, TaskScheduler
 
@@ -19,6 +20,15 @@ class TranscriptAcquirer(Protocol):
         gates: ResourceGates,
         progress: ProgressSink,
     ) -> Transcript: ...
+
+
+class TranscriptPlanner(Protocol):
+    async def plan(
+        self,
+        url: str,
+        options: TaskOptions,
+        gates: ResourceGates,
+    ) -> ProcessingPlan: ...
 
 
 class YouTubeTextEngine:
@@ -36,11 +46,7 @@ class YouTubeTextEngine:
         *,
         progress: ProgressSink = discard_progress,
     ) -> list[TaskResult]:
-        if not urls:
-            raise ValueError("at least one URL is required")
-        normalized = [url.strip() for url in urls]
-        if any(not url for url in normalized):
-            raise ValueError("URLs must not be empty")
+        normalized = _normalize_urls(urls)
 
         async def run_one(url: str) -> TaskResult:
             transcript = await self._acquirer.acquire(url, options, self._gates, progress)
@@ -50,3 +56,35 @@ class YouTubeTextEngine:
             return TaskResult(url=url, transcript=transcript, output=output)
 
         return await TaskScheduler(self._plan).run(normalized, run_one)
+
+    async def plan(
+        self,
+        urls: list[str],
+        options: TaskOptions,
+    ) -> list[PlanResult]:
+        """Inspect URLs concurrently while retaining input order and failures."""
+
+        normalized = _normalize_urls(urls)
+        planner = cast(TranscriptPlanner, self._acquirer)
+
+        async def plan_one(url: str) -> PlanResult:
+            plan = await planner.plan(url, options, self._gates)
+            return PlanResult(url=url, plan=plan)
+
+        return await TaskScheduler(self._plan).map(
+            normalized,
+            plan_one,
+            lambda url, exc: PlanResult(
+                url=url,
+                error=str(exc) or type(exc).__name__,
+            ),
+        )
+
+
+def _normalize_urls(urls: list[str]) -> list[str]:
+    if not urls:
+        raise ValueError("at least one URL is required")
+    normalized = [url.strip() for url in urls]
+    if any(not url for url in normalized):
+        raise ValueError("URLs must not be empty")
+    return normalized

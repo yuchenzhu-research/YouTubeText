@@ -27,10 +27,11 @@ from .ocr import (
     subtitle_segments_from_frames,
     vision_language_codes,
 )
+from .planning import ProcessingPlan, build_processing_plan
 from .progress import ProgressEvent, ProgressSink, Stage
 from .resume import EphemeralResumeStore, OCRRecipe, ResumeSession, ResumeStore
 from .runtime import ResourceGates, run_blocking
-from .sources import SourceClient, SourceResult, YtDlpAuth
+from .sources import SourceClient, SourceInspection, SourceResult, YtDlpAuth
 
 
 class TranscriptAcquisitionError(RuntimeError):
@@ -38,6 +39,13 @@ class TranscriptAcquisitionError(RuntimeError):
 
 
 class SourceProvider(Protocol):
+    def inspect(
+        self,
+        url: str,
+        *,
+        preferred_languages: Sequence[str] = (),
+    ) -> SourceInspection: ...
+
     def fetch(
         self,
         url: str,
@@ -120,6 +128,22 @@ class TranscriptPipeline:
         self._resume = resume_store or EphemeralResumeStore(self._temporary_root())
         self._ocr_batch_size = int(ocr_batch_size)
         self._asr_backends: dict[str, ASRBackend] = {}
+
+    async def plan(
+        self,
+        url: str,
+        options: TaskOptions,
+        gates: ResourceGates,
+    ) -> ProcessingPlan:
+        """Inspect one source and describe work without starting that work."""
+
+        async with gates.network:
+            inspection = await run_blocking(
+                self._sources.inspect,
+                url,
+                preferred_languages=_caption_languages(options),
+            )
+        return build_processing_plan(inspection, options.mode)
 
     async def acquire(
         self,
