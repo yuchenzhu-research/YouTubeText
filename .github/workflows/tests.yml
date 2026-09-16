@@ -23,8 +23,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Windows venv/pip fallback smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:YOUTUBETEXT_FALLBACK_TEST_PYTHON = (uv python find 3.12).Trim()
+          $env:YOUTUBETEXT_FALLBACK_TEST_ROOT = Join-Path $env:RUNNER_TEMP 'YouTubeText pip fallback with spaces'
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/windows_install_fallback.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # Exercise the Windows PowerShell 5.1 installer without downloading media
-      # or models. FFmpeg is a PATH-only prerequisite here; no video is decoded.
+      # or models. The fake FFmpeg is deliberately unusable: doctor must reject it.
       - name: Windows installer smoke test
         if: runner.os == 'Windows'
         shell: pwsh
@@ -38,6 +47,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\.venv\Scripts\youtubetext.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $doctorJson = & .\.venv\Scripts\youtubetext.exe doctor --json
+          if ($LASTEXITCODE -ne 1) { throw 'Doctor accepted an unusable FFmpeg fixture.' }
+          $doctor = $doctorJson | ConvertFrom-Json
+          $ffmpegCheck = @($doctor.checks | Where-Object { $_.key -eq 'ffmpeg' })
+          if ($doctor.ready -or $ffmpegCheck.Count -ne 1 -or $ffmpegCheck[0].ok) {
+            throw 'Doctor must report the FFmpeg fixture as unavailable.'
+          }
 
       - name: Install locked development dependencies
         run: uv sync --locked
