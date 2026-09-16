@@ -9,6 +9,7 @@ from youtubetext.media import (
     MediaDownloader,
     MediaDownloadError,
     MediaPurpose,
+    locate_ffmpeg,
     sampling_interval,
 )
 from youtubetext.sources import YtDlpAuth
@@ -19,6 +20,15 @@ def test_sampling_interval_bounds_long_video_frame_count():
     assert sampling_interval(7200) == 3
     assert 7200 / sampling_interval(7200) <= 2400
     assert sampling_interval(2401) == pytest.approx(2401 / 2400)
+
+
+def test_missing_ffmpeg_uses_a_cross_platform_install_hint(monkeypatch):
+    monkeypatch.setattr("youtubetext.media.shutil.which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="add it to PATH") as error:
+        locate_ffmpeg()
+
+    assert "brew" not in str(error.value)
 
 
 def test_download_options_choose_audio_or_low_resolution_video(tmp_path):

@@ -46,7 +46,10 @@ def sampling_interval(duration_seconds: float, *, max_frames: int = 2400) -> flo
 def locate_ffmpeg() -> Path:
     value = shutil.which("ffmpeg")
     if not value:
-        raise RuntimeError("FFmpeg was not found. Install it with: brew install ffmpeg")
+        raise RuntimeError(
+            "FFmpeg was not found on PATH. Install FFmpeg, add it to PATH, "
+            "then reopen the terminal."
+        )
     return Path(value).resolve()
 
 
