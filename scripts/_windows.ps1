@@ -56,10 +56,15 @@ function Resolve-YouTubeTextPython {
             $launcher = $command.Path
         }
         $prefix = @($candidate.Prefix)
-        $probe = & $launcher @prefix -c (
-            "import sys; ok=(3,11)<=sys.version_info<(3,15) and sys.maxsize>2**32; " +
-            "sys.stdout.write(sys.executable) if ok else sys.exit(1)"
-        ) 2>$null
+        try {
+            $probe = & $launcher @prefix -c (
+                "import sys; ok=(3,11)<=sys.version_info<(3,15) and sys.maxsize>2**32; " +
+                "sys.stdout.write(sys.executable) if ok else sys.exit(1)"
+            ) 2>$null
+        }
+        catch {
+            continue
+        }
         if ($LASTEXITCODE -ne 0) {
             continue
         }
