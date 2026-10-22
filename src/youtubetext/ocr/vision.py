@@ -88,6 +88,8 @@ def _binary_candidates() -> Iterable[Path]:
         bundle_root = Path(getattr(sys, "_MEIPASS", executable_dir))
         yield bundle_root / VISION_OCR_EXECUTABLE
 
+    yield Path(__file__).resolve().parents[1] / "_bin" / VISION_OCR_EXECUTABLE
+
     yield _project_root() / "bin" / VISION_OCR_EXECUTABLE
 
     on_path = shutil.which(VISION_OCR_EXECUTABLE)

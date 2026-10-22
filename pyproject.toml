@@ -4,9 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "youtubetext"
-version = "0.1.0"
+version = "0.2.0"
 description = "A macOS and Windows terminal tool for clean YouTube and Bilibili transcripts."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.11,<3.15"
 dependencies = [
   "click>=8.1,<9",
@@ -33,6 +35,25 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/youtubetext"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/native/macos/VisionOCR.swift",
+  "/scripts",
+  "/hatch_build.py",
+  "/pyproject.toml",
+  "/uv.lock",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/docs",
+  "/tests/fixtures/ted_caption_timing.json",
+  "/THIRD_PARTY_NOTICES.md",
+  "/LICENSE",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"

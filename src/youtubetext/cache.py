@@ -21,7 +21,7 @@ from .domain import (
 )
 
 CACHE_SCHEMA = 1
-PIPELINE_REVISION = "fallback-transcript-v3-audio-gap-verification"
+PIPELINE_REVISION = "fallback-transcript-v4-local-streamed-ocr-chunked-asr"
 
 
 class TranscriptCache:
@@ -114,6 +114,9 @@ class TranscriptCache:
             "language": options.language.strip(),
             "caption_languages": list(options.preferred_caption_languages),
             "whisper_model": options.whisper_model,
+            "ocr_profile": options.ocr_profile,
+            "ocr_region": list(options.ocr_region),
+            "media_type": metadata.media_type,
             "auth_scope": self._auth_scope,
         }
         encoded = json.dumps(
@@ -143,12 +146,14 @@ def _same_source_identity(first: SourceMetadata, second: SourceMetadata) -> bool
         first.url.strip(),
         first.webpage_url.strip(),
         first.duration_seconds,
+        first.media_type,
     ) == (
         second.platform,
         second.source_id,
         second.url.strip(),
         second.webpage_url.strip(),
         second.duration_seconds,
+        second.media_type,
     )
 
 

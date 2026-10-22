@@ -18,6 +18,8 @@ class ProcessingMode(str, Enum):
 class TranscriptMethod(str, Enum):
     PLATFORM_CAPTIONS = "platform-captions"
     PLATFORM_CAPTIONS_WHISPER = "platform-captions-whisper"
+    LOCAL_CAPTIONS = "local-captions"
+    LOCAL_CAPTIONS_WHISPER = "local-captions-whisper"
     APPLE_VISION_OCR = "apple-vision-ocr"
     RAPID_OCR = "rapidocr"
     MLX_WHISPER = "mlx-whisper"
@@ -34,9 +36,10 @@ class SourceMetadata:
     author: str = ""
     duration_seconds: float = 0.0
     webpage_url: str = ""
+    media_type: str = "video"
 
     def __post_init__(self) -> None:
-        if self.platform not in {"youtube", "bilibili"}:
+        if self.platform not in {"youtube", "bilibili", "local"}:
             raise ValueError(f"unsupported platform: {self.platform}")
         if not self.url.strip():
             raise ValueError("source URL must not be empty")
@@ -46,6 +49,8 @@ class SourceMetadata:
         if not math.isfinite(duration) or duration < 0:
             raise ValueError("duration must be a finite non-negative number")
         object.__setattr__(self, "duration_seconds", duration)
+        if self.media_type not in {"audio", "video"}:
+            raise ValueError("media_type must be audio or video")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,9 +111,20 @@ class TaskOptions:
     preferred_caption_languages: tuple[str, ...] = ()
     whisper_model: str = "auto"
     output_dir: Path = field(default_factory=lambda: Path.cwd() / "YouTubeText-output")
+    ocr_profile: str = "balanced"
+    ocr_region: tuple[float, float, float, float] = (0.0, 0.55, 1.0, 0.45)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_dir", Path(self.output_dir).expanduser())
+        if self.ocr_profile not in {"fast", "balanced", "accurate"}:
+            raise ValueError("ocr_profile must be fast, balanced, or accurate")
+        region = tuple(float(value) for value in self.ocr_region)
+        if len(region) != 4 or not all(math.isfinite(value) for value in region):
+            raise ValueError("ocr_region must contain four finite values: x,y,width,height")
+        x, y, width, height = region
+        if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
+            raise ValueError("ocr_region must fit inside the normalized frame")
+        object.__setattr__(self, "ocr_region", region)
 
 
 @dataclass(frozen=True, slots=True)

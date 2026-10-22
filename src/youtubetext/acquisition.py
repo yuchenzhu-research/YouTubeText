@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import tempfile
 from collections.abc import Sequence
 from dataclasses import replace
@@ -33,6 +34,7 @@ from .completeness import (
     assess_completeness,
 )
 from .media import FrameSampler, MediaDownloader, MediaPurpose, SampledFrame
+from .inputs import InputSources, local_path
 from .ocr import (
     OCRFrame,
     normalize_caption,
@@ -41,7 +43,7 @@ from .ocr import (
 )
 from .planning import ProcessingPlan, build_processing_plan
 from .progress import ProgressEvent, ProgressSink, Stage
-from .resume import EphemeralResumeStore, OCRRecipe, ResumeSession, ResumeStore
+from .resume import ASRRecipe, EphemeralResumeStore, OCRRecipe, ResumeSession, ResumeStore
 from .runtime import ResourceGates, run_blocking
 from .sources import SourceClient, SourceInspection, SourceResult, YtDlpAuth
 
@@ -121,7 +123,7 @@ class TranscriptPipeline:
         selected_backends = backends
         if selected_backends is None and (ocr is None or asr_factory is None):
             selected_backends = default_local_backends()
-        self._sources = sources or SourceClient(auth=auth)
+        self._sources = sources or InputSources(SourceClient(auth=auth))
         self._media = media or MediaDownloader(auth=auth)
         self._frames = frames or FrameSampler()
         self._audio_activity = audio_activity or FFmpegAudioActivity()
@@ -199,7 +201,11 @@ class TranscriptPipeline:
             transcript = Transcript(
                 metadata=source.metadata,
                 language=source.subtitle.language,
-                method=TranscriptMethod.PLATFORM_CAPTIONS,
+                method=(
+                    TranscriptMethod.LOCAL_CAPTIONS
+                    if source.metadata.platform == "local"
+                    else TranscriptMethod.PLATFORM_CAPTIONS
+                ),
                 segments=source.subtitle.segments,
                 warnings=source.warnings,
             )
@@ -296,11 +302,8 @@ class TranscriptPipeline:
         session: ResumeSession,
     ) -> Transcript:
         try:
-            media_path = await session.media(
-                MediaPurpose.AUDIO,
-                lambda directory: self._download(
-                    transcript.metadata.url, directory, MediaPurpose.AUDIO, gates, progress,
-                ),
+            media_path = await self._acquire_media(
+                transcript.metadata.url, MediaPurpose.AUDIO, session, gates, progress,
             )
         except asyncio.CancelledError:
             raise
@@ -311,7 +314,7 @@ class TranscriptPipeline:
                 "retained the platform captions. Review the uncovered intervals.",
             )
         return await self._verify_text_gaps(
-            transcript, media_path, options, gates, progress,
+            transcript, media_path, options, gates, progress, session,
         )
 
     async def _verify_text_gaps(
@@ -321,6 +324,7 @@ class TranscriptPipeline:
         options: TaskOptions,
         gates: ResourceGates,
         progress: ProgressSink,
+        session: ResumeSession,
     ) -> Transcript:
         report = assess_completeness(
             transcript.segments, transcript.metadata.duration_seconds,
@@ -352,7 +356,7 @@ class TranscriptPipeline:
         ))
         try:
             speech = await self._run_whisper(
-                transcript.metadata.url, media_path, options, gates, progress,
+                transcript.metadata.url, media_path, options, gates, progress, session,
             )
         except asyncio.CancelledError:
             raise
@@ -381,11 +385,10 @@ class TranscriptPipeline:
                 "Checked long text gaps with Whisper, but no additional text "
                 "was recovered. Review the uncovered intervals.",
             )
-        method = (
-            TranscriptMethod.PLATFORM_CAPTIONS_WHISPER
-            if transcript.method is TranscriptMethod.PLATFORM_CAPTIONS
-            else TranscriptMethod.OCR_WHISPER
-        )
+        method = {
+            TranscriptMethod.PLATFORM_CAPTIONS: TranscriptMethod.PLATFORM_CAPTIONS_WHISPER,
+            TranscriptMethod.LOCAL_CAPTIONS: TranscriptMethod.LOCAL_CAPTIONS_WHISPER,
+        }.get(transcript.method, TranscriptMethod.OCR_WHISPER)
         return replace(
             transcript,
             method=method,
@@ -407,16 +410,15 @@ class TranscriptPipeline:
         progress: ProgressSink,
         session: ResumeSession,
     ) -> Transcript:
-        if options.mode is ProcessingMode.WHISPER:
-            media_path = await session.media(
-                MediaPurpose.AUDIO,
-                lambda directory: self._download(
-                    url,
-                    directory,
-                    MediaPurpose.AUDIO,
-                    gates,
-                    progress,
-                ),
+        if source.metadata.media_type == "audio" and options.mode in {
+            ProcessingMode.OCR, ProcessingMode.HYBRID,
+        }:
+            raise TranscriptAcquisitionError("OCR and hybrid modes require a video stream")
+        if options.mode is ProcessingMode.WHISPER or (
+            source.metadata.platform == "local" and source.metadata.media_type == "audio"
+        ):
+            media_path = await self._acquire_media(
+                url, MediaPurpose.AUDIO, session, gates, progress,
             )
             return await self._whisper_transcript(
                 source.metadata,
@@ -424,21 +426,15 @@ class TranscriptPipeline:
                 options,
                 gates,
                 progress,
+                session,
             )
 
         video_path: Path | None = None
         ocr_segments: tuple[TranscriptSegment, ...] = ()
         ocr_warnings: tuple[str, ...] = ()
         try:
-            video_path = await session.media(
-                MediaPurpose.ANALYSIS_VIDEO,
-                lambda directory: self._download(
-                    url,
-                    directory,
-                    MediaPurpose.ANALYSIS_VIDEO,
-                    gates,
-                    progress,
-                ),
+            video_path = await self._acquire_media(
+                url, MediaPurpose.ANALYSIS_VIDEO, session, gates, progress,
             )
             frame_root = self._temporary_root()
             frame_root.mkdir(parents=True, exist_ok=True)
@@ -489,19 +485,12 @@ class TranscriptPipeline:
             )
             assert video_path is not None
             return await self._verify_text_gaps(
-                transcript, video_path, options, gates, progress,
+                transcript, video_path, options, gates, progress, session,
             )
 
         if video_path is None:
-            video_path = await session.media(
-                MediaPurpose.AUDIO,
-                lambda directory: self._download(
-                    url,
-                    directory,
-                    MediaPurpose.AUDIO,
-                    gates,
-                    progress,
-                ),
+            video_path = await self._acquire_media(
+                url, MediaPurpose.AUDIO, session, gates, progress,
             )
         asr_result = await self._run_whisper(
             url,
@@ -509,6 +498,7 @@ class TranscriptPipeline:
             options,
             gates,
             progress,
+            session,
         )
 
         if options.mode is ProcessingMode.HYBRID and usable_ocr:
@@ -543,6 +533,21 @@ class TranscriptPipeline:
             return self._temp_root
         return Path(user_cache_dir("YouTubeText")) / "work"
 
+    async def _acquire_media(
+        self, value: str, purpose: MediaPurpose, session: ResumeSession,
+        gates: ResourceGates, progress: ProgressSink,
+    ) -> Path:
+        path = local_path(value)
+        if path is not None:
+            # Original files are read in place. They are never placed inside
+            # task storage, copied, deleted, or altered by resume cleanup.
+            await progress(ProgressEvent(value, Stage.METADATA, "Reading local media"))
+            return path
+        return await session.media(
+            purpose,
+            lambda directory: self._download(value, directory, purpose, gates, progress),
+        )
+
     async def _download(
         self,
         url: str,
@@ -567,15 +572,38 @@ class TranscriptPipeline:
         progress: ProgressSink,
         session: ResumeSession,
     ) -> tuple[tuple[TranscriptSegment, ...], tuple[str, ...]]:
+        import hashlib
+        import math
+        from collections import OrderedDict
+        from contextlib import aclosing
+
+        from .media import FRAME_SAMPLING_REVISION, ocr_sampling_interval
+
         await progress(ProgressEvent(url, Stage.OCR, "Sampling subtitle frames"))
+        streaming = callable(getattr(self._frames, "iter_batches", None))
+        profile = options.ocr_profile
+        region = options.ocr_region
+        interval = ocr_sampling_interval(profile)
+        batch_size = min(32, self._ocr_batch_size) if streaming else self._ocr_batch_size
+        provider_type = type(self._frames)
+        sampling_revision = (
+            f"{FRAME_SAMPLING_REVISION}:"
+            f"{provider_type.__module__}.{provider_type.__qualname__}:"
+            f"{'stream' if streaming else 'legacy'}"
+        )
+        expected_total = (
+            math.ceil(metadata.duration_seconds / interval)
+            if metadata.duration_seconds > 0 and streaming
+            else 0
+        )
+        recognized = []
+        sampled_count = 0
+        frame_duration = interval
+        # Exact crop bytes are safe to reuse. Every timeline position still
+        # receives an OCRFrame, including repeated and blank subtitle images.
+        image_cache = OrderedDict()
+
         async with gates.ocr:
-            sampled = await self._frames.sample(
-                video_path,
-                frame_directory,
-                metadata.duration_seconds,
-            )
-            if not sampled:
-                return (), ()
             languages = _ocr_languages(
                 options.language,
                 metadata,
@@ -587,12 +615,22 @@ class TranscriptPipeline:
             )
             recipe = OCRRecipe(
                 languages=languages,
-                batch_size=self._ocr_batch_size,
+                batch_size=batch_size,
+                sampling_revision=sampling_revision,
                 engine_revision=engine_revision,
+                profile=profile,
+                region=region,
+                sampling_interval_seconds=interval,
             )
 
             async def report_batch(start: int, total: int) -> None:
-                fraction = min(1.0, start / total)
+                completed = sampled_count + start
+                denominator = expected_total if streaming else total
+                fraction = (
+                    min(0.99, completed / denominator)
+                    if denominator
+                    else None
+                )
                 await progress(
                     ProgressEvent(url, Stage.OCR, "Recognizing burned-in captions", fraction)
                 )
@@ -601,25 +639,87 @@ class TranscriptPipeline:
                 paths: Sequence[Path],
                 active_recipe: OCRRecipe,
             ) -> tuple[OCRFrame, ...]:
-                return await self._ocr.recognize_images_async(
-                    paths,
-                    languages=active_recipe.languages,
-                    accurate=active_recipe.accurate,
-                    minimum_text_height=active_recipe.minimum_text_height,
-                )
+                if not streaming:
+                    return await self._ocr.recognize_images_async(
+                        paths,
+                        languages=active_recipe.languages,
+                        accurate=active_recipe.accurate,
+                        minimum_text_height=active_recipe.minimum_text_height,
+                    )
+                def digests():
+                    return tuple(hashlib.sha256(path.read_bytes()).digest() for path in paths)
 
-            recognized = await session.ocr(
-                sampled,
-                recipe,
-                recognize_batch,
-                report_batch,
-            )
+                hashes = await run_blocking(digests)
+                pending = {}
+                for digest, path in zip(hashes, paths):
+                    if digest not in image_cache:
+                        pending.setdefault(digest, path)
+                fresh = ()
+                if pending:
+                    fresh = tuple(await self._ocr.recognize_images_async(
+                        tuple(pending.values()),
+                        languages=active_recipe.languages,
+                        accurate=active_recipe.accurate,
+                        minimum_text_height=active_recipe.minimum_text_height,
+                    ))
+                    if len(fresh) != len(pending):
+                        raise RuntimeError("OCR recognizer returned an unexpected frame count")
+                results = dict(zip(pending, fresh))
+                for digest in hashes:
+                    if digest in image_cache:
+                        results[digest] = image_cache[digest]
+                answer = tuple(
+                    OCRFrame(str(path), results[digest].observations, results[digest].error)
+                    for path, digest in zip(paths, hashes)
+                )
+                for digest, frame in results.items():
+                    if frame.error is None:
+                        image_cache[digest] = frame
+                        image_cache.move_to_end(digest)
+                while len(image_cache) > 256:
+                    image_cache.popitem(last=False)
+                return answer
+
+            if streaming:
+                batches = self._frames.iter_batches(
+                    video_path,
+                    frame_directory,
+                    metadata.duration_seconds,
+                    profile=profile,
+                    region=region,
+                    batch_size=batch_size,
+                )
+            else:
+                async def legacy_batches():
+                    yield await self._frames.sample(
+                        video_path,
+                        frame_directory,
+                        metadata.duration_seconds,
+                    )
+
+                batches = legacy_batches()
+            async with aclosing(batches):
+                async for sampled in batches:
+                    if not sampled:
+                        continue
+                    if not streaming:
+                        frame_duration = _frame_duration(sampled)
+                    recognized.extend(await session.ocr(
+                        sampled,
+                        recipe,
+                        recognize_batch,
+                        report_batch,
+                        start_ordinal=sampled_count,
+                    ))
+                    sampled_count += len(sampled)
+        if not sampled_count:
+            return (), ()
         failed_frames = sum(item.frame.error is not None for item in recognized)
-        failure_ratio = failed_frames / len(sampled)
+        failure_ratio = failed_frames / sampled_count
         if failure_ratio > 0.1:
             raise TranscriptAcquisitionError(
                 f"{self._ocr_label} failed on {failed_frames} of "
-                f"{len(sampled)} frames"
+                f"{sampled_count} frames"
             )
         warnings = (
             (
@@ -632,7 +732,12 @@ class TranscriptPipeline:
         await progress(ProgressEvent(url, Stage.OCR, "Cleaned OCR captions", 1.0))
         segments = subtitle_segments_from_frames(
             recognized,
-            frame_duration_seconds=_frame_duration(sampled),
+            frame_duration_seconds=frame_duration,
+            caption_options=(
+                {"maximum_y": 1.0, "center_left": 0.0, "center_right": 1.0}
+                if tuple(region) != (0.0, 0.55, 1.0, 0.45)
+                else None
+            ),
         )
         return segments, warnings
 
@@ -643,6 +748,7 @@ class TranscriptPipeline:
         options: TaskOptions,
         gates: ResourceGates,
         progress: ProgressSink,
+        session: ResumeSession,
     ) -> Transcript:
         result = await self._run_whisper(
             metadata.url,
@@ -650,6 +756,7 @@ class TranscriptPipeline:
             options,
             gates,
             progress,
+            session,
         )
         return Transcript(
             metadata=metadata,
@@ -665,6 +772,7 @@ class TranscriptPipeline:
         options: TaskOptions,
         gates: ResourceGates,
         progress: ProgressSink,
+        session: ResumeSession,
     ) -> ASRResult:
         model = options.whisper_model
         backend = self._asr_backends.get(model)
@@ -679,10 +787,28 @@ class TranscriptPipeline:
             )
         )
         async with gates.asr:
-            result = await run_blocking(
-                backend.transcribe,
-                media_path,
-                language=_whisper_language(options.language),
+            language = _whisper_language(options.language)
+            backend_model = getattr(backend, "model", None)
+            resolved_model = getattr(backend, "model_name", None) or getattr(backend_model, "name", None) or model
+            distribution = "mlx-whisper" if self._asr_method is TranscriptMethod.MLX_WHISPER else "faster-whisper"
+            try:
+                version = importlib.metadata.version(distribution)
+            except importlib.metadata.PackageNotFoundError:
+                version = "injected"
+            backend_type = type(backend)
+            recipe = ASRRecipe(
+                model=resolved_model, language=language,
+                engine_revision=f"{backend_type.__module__}.{backend_type.__qualname__}:{version}",
+            )
+
+            async def report_chunk(done: int, total: int) -> None:
+                await progress(ProgressEvent(
+                    url, Stage.WHISPER, f"Whisper chunks: {done}/{total}", done / total,
+                ))
+
+            result = await session.asr(
+                media_path, recipe,
+                lambda path: backend.transcribe(path, language=language), report_chunk,
             )
         await progress(ProgressEvent(url, Stage.WHISPER, "Speech transcription complete", 1.0))
         return result

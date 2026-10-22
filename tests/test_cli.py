@@ -144,7 +144,7 @@ def test_help_and_version_do_not_require_a_url():
     version_result = runner.invoke(cli.main, ["--version"])
 
     assert help_result.exit_code == 0
-    assert "youtubetext [OPTIONS] URL [URL...]" in help_result.output
+    assert "youtubetext [OPTIONS] INPUT [INPUT...]" in help_result.output
     assert "YouTube or Bilibili" in help_result.output
     assert "--cookies-from-browser" in help_result.output
     assert "--cookies-file" in help_result.output
@@ -155,7 +155,7 @@ def test_help_and_version_do_not_require_a_url():
     assert "Source language hint; not translation or script conversion." in normalized_help
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
-    assert "0.1.0" in version_result.output
+    assert "0.2.0" in version_result.output
 
 
 def test_successful_cli_exposes_uncertainty_warnings_without_interpreting_markup(monkeypatch, tmp_path):
@@ -180,6 +180,28 @@ def test_json_cli_exposes_coverage_report_without_promising_complete_text(monkey
     report = json.loads(result.output)["results"][0]["completeness"]
     assert report["status"] == "unverified"
     assert report["coverage_ratio"] is None
+
+
+def test_cli_passes_ocr_density_and_crop_to_pipeline(monkeypatch, tmp_path):
+    install_fake_runtime(monkeypatch, [successful_result(URL_1, tmp_path)])
+
+    result = CliRunner().invoke(cli.main, [
+        URL_1, "--ocr-profile", "accurate", "--ocr-region", "0", "0", "1", "0.3", "--json",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert FakeEngine.created[-1].options.ocr_profile == "accurate"
+    assert FakeEngine.created[-1].options.ocr_region == (0, 0, 1, 0.3)
+
+
+def test_cli_rejects_crop_outside_frame_before_processing(monkeypatch, tmp_path):
+    install_fake_runtime(monkeypatch, [successful_result(URL_1, tmp_path)])
+
+    result = CliRunner().invoke(cli.main, [URL_1, "--ocr-region", "0.5", "0", "1", "1", "--json"])
+
+    assert result.exit_code != 0
+    assert "ocr_region" in result.output
+    assert not FakeEngine.created
 
 
 @pytest.mark.parametrize(

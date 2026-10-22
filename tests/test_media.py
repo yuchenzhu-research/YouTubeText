@@ -10,6 +10,8 @@ from youtubetext.media import (
     MediaDownloadError,
     MediaPurpose,
     locate_ffmpeg,
+    normalize_ocr_region,
+    ocr_sampling_interval,
     sampling_interval,
 )
 from youtubetext.sources import YtDlpAuth
@@ -20,6 +22,31 @@ def test_sampling_interval_bounds_long_video_frame_count():
     assert sampling_interval(7200) == 3
     assert 7200 / sampling_interval(7200) <= 2400
     assert sampling_interval(2401) == pytest.approx(2401 / 2400)
+
+
+@pytest.mark.parametrize("profile, interval", [("fast", 1), ("balanced", 0.5), ("accurate", 0.25)])
+def test_streaming_profile_interval_does_not_depend_on_video_length(profile, interval):
+    assert ocr_sampling_interval(profile) == interval
+    assert 7200 / interval in {7200, 14400, 28800}
+
+
+@pytest.mark.parametrize("profile", ["", "slow", None])
+def test_unknown_ocr_sampling_profile_is_rejected(profile):
+    with pytest.raises(ValueError, match="profile"):
+        ocr_sampling_interval(profile)
+
+
+@pytest.mark.parametrize(
+    "region",
+    [(-0.1, 0, 1, 1), (0, 0, 0, 1), (0, 0, 1, 2), (0, 0.9, 1, 0.2), (0, 0, float("nan"), 1), (0, 0, 1)],
+)
+def test_ocr_region_must_fit_top_left_normalized_coordinates(region):
+    with pytest.raises(ValueError, match="region"):
+        normalize_ocr_region(region)
+
+
+def test_ocr_region_preserves_top_left_position_and_dimensions():
+    assert normalize_ocr_region((0.1, 0.2, 0.3, 0.4)) == (0.1, 0.2, 0.3, 0.4)
 
 
 def test_missing_ffmpeg_uses_a_cross_platform_install_hint(monkeypatch):

@@ -19,6 +19,8 @@ from typing import Protocol
 from platformdirs import user_cache_dir
 
 from ._locking import FileLock, open_file_lock
+from .asr.backend import ASRResult
+from .asr.chunks import ASRRecipe, transcribe_chunks
 from .cache import TranscriptCache
 from .domain import SourceMetadata, TaskOptions, Transcript
 from .media import FRAME_SAMPLING_REVISION, MediaPurpose, SampledFrame
@@ -92,6 +94,9 @@ class OCRRecipe:
     engine_revision: str = "unspecified-ocr-engine-v1"
     accurate: bool = True
     minimum_text_height: float = 0.012
+    profile: str = "balanced"
+    region: tuple[float, float, float, float] = (0.0, 0.55, 1.0, 0.45)
+    sampling_interval_seconds: float = 0.5
 
     def __post_init__(self) -> None:
         languages = tuple(
@@ -101,6 +106,11 @@ class OCRRecipe:
         sampling_revision = self.sampling_revision.strip()
         engine_revision = self.engine_revision.strip()
         minimum_text_height = float(self.minimum_text_height)
+        from .media import normalize_ocr_region, ocr_sampling_interval
+
+        ocr_sampling_interval(self.profile)
+        region = normalize_ocr_region(self.region)
+        sampling_interval = float(self.sampling_interval_seconds)
         if batch_size < 1:
             raise ValueError("OCR batch_size must be at least one")
         if not sampling_revision:
@@ -109,15 +119,27 @@ class OCRRecipe:
             raise ValueError("OCR engine_revision must not be empty")
         if not math.isfinite(minimum_text_height) or not 0 <= minimum_text_height <= 1:
             raise ValueError("OCR minimum_text_height must be between zero and one")
+        if not math.isfinite(sampling_interval) or sampling_interval <= 0:
+            raise ValueError("OCR sampling interval must be finite and positive")
         object.__setattr__(self, "languages", languages)
         object.__setattr__(self, "batch_size", batch_size)
         object.__setattr__(self, "sampling_revision", sampling_revision)
         object.__setattr__(self, "engine_revision", engine_revision)
         object.__setattr__(self, "accurate", bool(self.accurate))
         object.__setattr__(self, "minimum_text_height", minimum_text_height)
+        object.__setattr__(self, "region", region)
+        object.__setattr__(self, "sampling_interval_seconds", sampling_interval)
 
 
 class ResumeSession(Protocol):
+    async def asr(
+        self,
+        media_path: Path,
+        recipe: ASRRecipe,
+        transcribe: Callable[[Path], ASRResult],
+        progress: Callable[[int, int], Awaitable[None]],
+    ) -> ASRResult: ...
+
     async def media(
         self,
         purpose: MediaPurpose,
@@ -133,6 +155,8 @@ class ResumeSession(Protocol):
             Awaitable[tuple[OCRFrame, ...]],
         ],
         progress: Callable[[int, int], Awaitable[None]],
+        *,
+        start_ordinal: int = 0,
     ) -> tuple[TimedOCRFrame, ...]: ...
 
 
@@ -431,6 +455,18 @@ class _ResumeSession:
         self._root = task_root
         self._persistent = persistent
 
+    async def asr(
+        self,
+        media_path: Path,
+        recipe: ASRRecipe,
+        transcribe: Callable[[Path], ASRResult],
+        progress: Callable[[int, int], Awaitable[None]],
+    ) -> ASRResult:
+        return await transcribe_chunks(
+            media_path, recipe, transcribe, progress,
+            task_root=self._root, persistent=self._persistent,
+        )
+
     async def media(
         self,
         purpose: MediaPurpose,
@@ -492,7 +528,11 @@ class _ResumeSession:
             Awaitable[tuple[OCRFrame, ...]],
         ],
         progress: Callable[[int, int], Awaitable[None]],
+        *,
+        start_ordinal: int = 0,
     ) -> tuple[TimedOCRFrame, ...]:
+        if start_ordinal < 0:
+            raise ValueError("OCR start ordinal must be non-negative")
         total = len(sampled_frames)
         if not total:
             return ()
@@ -516,9 +556,12 @@ class _ResumeSession:
             frames: tuple[OCRFrame, ...] | None = None
 
             if checkpoint_root is not None:
-                identities = await run_blocking(_ocr_identities, batch, start)
-                batch_index = start // recipe.batch_size
-                checkpoint = checkpoint_root / f"batch-{batch_index:08d}.json"
+                absolute_start = start_ordinal + start
+                identities = await run_blocking(_ocr_identities, batch, absolute_start)
+                batch_index = absolute_start // recipe.batch_size
+                checkpoint = checkpoint_root / (
+                    f"batch-{batch_index:08d}-frame-{absolute_start:012d}.json"
+                )
                 frames = _load_ocr_checkpoint(
                     checkpoint,
                     recipe_key=recipe_key,
@@ -544,7 +587,7 @@ class _ResumeSession:
                 if checkpoint is not None and not any(frame.error for frame in frames):
                     payload = _encode_ocr_checkpoint(
                         recipe_key=recipe_key,
-                        batch_index=start // recipe.batch_size,
+                        batch_index=(start_ordinal + start) // recipe.batch_size,
                         identities=identities,
                         frames=frames,
                     )
@@ -610,6 +653,9 @@ def _ocr_recipe_key(recipe: OCRRecipe) -> str:
         "batch_size": recipe.batch_size,
         "accurate": recipe.accurate,
         "minimum_text_height": recipe.minimum_text_height,
+        "profile": recipe.profile,
+        "region": list(recipe.region),
+        "sampling_interval_seconds": recipe.sampling_interval_seconds,
     }
     encoded = json.dumps(
         payload,

@@ -3,7 +3,7 @@
 [English](../README.md) | 繁體中文 | [简体中文](README.zh-Hans.md) | [Español](README.es.md) | [日本語](README.ja.md)
 
 YouTubeText 是一款適用於 Apple Silicon macOS 與 Windows x64 的終端工具，可將 YouTube 和
-Bilibili 影片轉換為乾淨且帶時間戳記的逐字稿。它會匯出一份帶時間戳記的
+Bilibili 影片及本機音訊／影片檔案轉換為乾淨且帶時間戳記的逐字稿。它會匯出一份帶時間戳記的
 Markdown 檔案、一份不含時間戳記的乾淨 Markdown 檔案、一份文字檔案，以及
 SRT/WebVTT 字幕、結構化逐字稿段落與中繼資料。
 
@@ -12,32 +12,37 @@ Ollama 或雲端 AI API。
 
 ## 功能
 
-- 在同一個命令中提交一個 URL 或一列 URL 佇列。
+- 在同一個佇列中提交 URL、本機路徑與 `file://` 輸入。
 - 偵測 YouTube 和 Bilibili 來源並讀取其中繼資料。
-- 有可用字幕時，優先採用平台提供的人工或自動字幕。
-- 沒有可用的平台字幕軌時，在 macOS 使用 Apple Vision、在 Windows 使用 RapidOCR 讀取內嵌字幕。
-- OCR 無法使用時，在 macOS 退回到本機 MLX Whisper、在 Windows 退回到 faster-whisper 語音辨識。
-- 同時匯出帶時間戳記與乾淨、不含時間戳記的 Markdown 逐字稿。
-- 匯出 SRT、WebVTT 字幕，以及包含逐字稿全文段落的 JSON。
-- 根據實體記憶體，以及 Windows 上的 CPU 容量，自動選擇 URL 並行數。
-- 重複使用已完成的逐字稿、續傳中斷的媒體下載，以及重複使用已完成的 OCR 批次。
-- 下載任何字幕或媒體檔案前，使用 `--plan` 檢查 URL。
-- 隔離失敗：單一錯誤 URL 不會取消佇列中的其他任務。
+- 優先採用平台人工或自動字幕，最多嘗試五條候選字幕軌。
+- 將相鄰 SRT/WebVTT 檔案讀取為 `local-captions`，不複製來源媒體。
+- 沒有可用字幕時，在 macOS 使用 Apple Vision、在 Windows 使用 RapidOCR 讀取內嵌字幕。
+- OCR 不可用時，在 macOS 退回 MLX Whisper、在 Windows 退回 faster-whisper。
+- 匯出帶時間戳記與不含時間戳記的 Markdown、TXT、SRT、WebVTT、逐段 JSON 與中繼資料。
+- 根據實體記憶體，以及 Windows 上的 CPU 容量，自動選擇輸入並行數。
+- 重複使用已完成的逐字稿、媒體下載、OCR 批次與 Whisper 區塊。
+- 使用 `--ocr-profile` 與 `--ocr-region` 選擇 OCR 取樣密度與字幕區域。
+- 轉錄或下載媒體前，使用 `--plan` 檢查輸入。
+- 隔離失敗：單一錯誤輸入不會取消佇列中的其他任務。
 
 ## 處理流程
 
 ```text
-URL 佇列
-  └─ 偵測平台並讀取中繼資料
-       ├─ 可用的平台字幕 ─────────────────→ 清理字幕段落 ───────→ 匯出
+INPUT 佇列（URL、本機路徑、file://）
+  └─ 讀取來源中繼資料
+       ├─ 可用的平台字幕／本機字幕檔 → 清理字幕段落 → 匯出
        └─ 無可用字幕
-            ├─ --resume 快取命中 ─────────────────────────────→ 匯出
-            └─ 快取未命中或未啟用續跑 → 分析影片 → 本機 OCR
-                                                    ├─ 可用 → 匯出
-                                                    └─ 不可用 → Whisper → 匯出
+            ├─ --resume 快取命中 → 匯出
+            ├─ 本機音訊 → Whisper → 匯出
+            └─ 遠端／本機影片 → 串流 OCR
+                                  ├─ 可用 → 匯出
+                                  └─ 不可用 → Whisper → 匯出
 ```
 
 字幕與可用 OCR 路徑都會在匯出前，依下方條件進行時間空白檢查。
+
+平台字幕下載或解析失敗時，會依既有偏好順序，最多嘗試五條平台提示的語言／類型
+候選字幕。所有嘗試均失敗時，會以長度受限的警告說明退回原因，不使用額外雲端 API。
 
 平台字幕沒有可疑時間空白時，不需要下載媒體。字幕檔案是小型的暫存輸入。
 在 `auto` 模式下，可疑的字幕空白可能觸發僅音訊下載，用於檢查與 Whisper；
@@ -52,8 +57,8 @@ Whisper 媒體保存在受監管的單次執行暫存目錄中，並在執行結
 可疑空白門檻為影片時長的 10%，最低 60 秒、最高 300 秒。短於 90 秒或
 時長未知的影片不使用此規則判斷。
 
-在 `auto` 模式下，可用的平台字幕或 OCR 結果若有可疑空白，會接受 FFmpeg
-靜音檢查。OCR 重複使用分析影片；平台字幕則只下載音訊進行檢查。空白區間
+在 `auto` 模式下，可用的平台字幕、本機字幕檔或 OCR 結果若有可疑空白，會接受 FFmpeg
+靜音檢查。OCR 重複使用分析影片；遠端平台字幕只下載音訊進行檢查，本機字幕檔則就地讀取原始媒體。空白區間
 若是靜音，就保留原文；若有非靜音音訊或無法完成檢查，就執行 Whisper，
 只合併與可疑空白重疊的 Whisper 段落，保留原文。Whisper 若失敗，仍會保留原逐字稿並明確警告
 無法確認完整性。強制 `captions` 與 `ocr` 模式會保留所選方法，回報長時間
@@ -69,15 +74,21 @@ Whisper 媒體保存在受監管的單次執行暫存目錄中，並在執行結
 WebVTT 後，文字與 `segments.json` 一致，時間誤差不超過 0.51 毫秒。
 [僅含時間的測試資料](../tests/fixtures/ted_caption_timing.json)不保留字幕文字，
 涵蓋四項離線回歸測試：原始時間，以及人工加入的開頭、中段、結尾遺漏。
-此驗證涵蓋平台字幕匯出；實際影片的 OCR/Whisper 準確率與更廣泛的 CER/WER
-基準測試仍待執行。
+此驗證涵蓋平台字幕匯出；更廣泛的真實影片 OCR/Whisper CER/WER 基準測試仍待執行。
+
+合成媒體基本測試也實際執行了 MLX Whisper `base`：17 個英文單字的音訊沒有單字
+編輯錯誤；原生 Apple Vision 以 `accurate` 處理 6 秒影片，辨識出全部三段各 2 秒的字幕。
+這些小型合成案例尚無法建立更廣泛的真實影片準確率。
+
+實際 307.5 秒合成音訊測試在第一個 300 秒區塊完成後中斷，再次執行時只處理剩餘
+區塊，且暫存音訊區塊已移除。
 
 ## 系統需求
 
 - Apple Silicon Mac (`arm64`) 與 macOS 13 或更新版本，或 64 位元 x86 Windows
 - Python 3.11–3.14
-- `PATH` 中可用的 FFmpeg
-- 僅 macOS：用於建置 Apple Vision OCR 輔助程式的 Xcode Command Line Tools
+- `PATH` 中可用的 FFmpeg 與 FFprobe
+- 僅 Mac 原始碼建置：用於建置 Apple Vision OCR 輔助程式的 Xcode Command Line Tools
 - 建議使用 `uv`
 
 在 macOS 上，如果尚未安裝 FFmpeg，請使用 Homebrew 安裝：
@@ -86,7 +97,7 @@ WebVTT 後，文字與 `segments.json` 一致，時間誤差不超過 0.51 毫�
 brew install ffmpeg
 ```
 
-在 macOS 上，如果尚未安裝 Apple 命令列工具，請執行：
+在 Mac 從原始碼建置時，如果尚未安裝 Apple 命令列工具，請執行：
 
 ```bash
 xcode-select --install
@@ -94,8 +105,26 @@ xcode-select --install
 
 ## 安裝
 
-兩個平台目前支援的安裝方式都是簽出原始碼。YouTubeText 尚未發佈為 PyPI 套件或預先
-建置的 wheel。
+兩個平台都繼續支援從原始碼安裝。0.2.0 的 macOS ARM64 wheel 已建置，並在原始碼
+目錄之外的全新環境完成基本驗證；它內附 Apple Vision 輔助程式，執行時不需要 Swift
+編譯器。Windows CI 已設定為建置通用 wheel，但這份新版 wheel 尚未在 Windows 驗證。
+目前尚未發佈至 PyPI 或建立 GitHub Release。
+
+取得已建置的 macOS wheel 後，可執行：
+
+```bash
+python -m pip install ./youtubetext-0.2.0-py3-none-macosx_13_0_arm64.whl
+```
+
+已建置的 Windows wheel 可在 PowerShell 安裝：
+
+```powershell
+python -m pip install .\youtubetext-0.2.0-py3-none-any.whl
+```
+
+仍須另行安裝 FFmpeg/FFprobe 與 Python 3.11–3.14；語音模型會在首次使用時下載。
+Mac 從原始碼安裝（包括 `youtubetext-0.2.0.tar.gz`）仍需要 Xcode Command Line Tools。
+以下是簽出原始碼的安裝方式。
 
 在 macOS 上執行：
 
@@ -150,7 +179,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 選擇輸出目錄，並提示來源文字可能是繁體中文：
 
 ```bash
-./.venv/bin/youtubetext URL \
+./.venv/bin/youtubetext INPUT \
   --output ~/Desktop/YouTubeText-output \
   --language zh-Hant
 ```
@@ -158,7 +187,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 傳回機器可讀的結果：
 
 ```bash
-./.venv/bin/youtubetext URL --json
+./.venv/bin/youtubetext INPUT --json
 ```
 
 顯示所有選項：
@@ -172,25 +201,42 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```powershell
 .\.venv\Scripts\youtubetext.exe doctor
 .\.venv\Scripts\youtubetext.exe "https://www.youtube.com/watch?v=VIDEO_ID"
-.\.venv\Scripts\youtubetext.exe URL_1 URL_2 --jobs 2
-.\.venv\Scripts\youtubetext.exe URL --plan
-.\.venv\Scripts\youtubetext.exe URL --resume
+.\.venv\Scripts\youtubetext.exe INPUT_1 INPUT_2 --jobs 2
+.\.venv\Scripts\youtubetext.exe INPUT --plan
+.\.venv\Scripts\youtubetext.exe INPUT --resume
 .\.venv\Scripts\youtubetext.exe cache
 ```
 
 以下其餘指令範例使用 macOS 的執行檔路徑。在 Windows 上，請將
 `./.venv/bin/youtubetext` 換成 `.\.venv\Scripts\youtubetext.exe`。
 
+## 本機輸入
+
+命令列接受 `INPUT [INPUT...]`：遠端 URL、本機音訊／影片路徑，或指向這台電腦的
+`file://` URL。含有空格的路徑必須加上引號。
+
+```bash
+./.venv/bin/youtubetext "/path/to/video.mp4" "/path/to/audio.wav" --resume
+./.venv/bin/youtubetext "file:///path/to/video.mp4" --plan
+```
+
+原始檔案會就地讀取，絕不複製至任務儲存空間或刪除。來源位元組改變時，SHA-256
+內容識別會使舊快取失效。相鄰的同名字幕檔，例如 `video.vtt` 或 `video.srt`，
+會在 `auto` 或 `captions` 模式讀取為 `local-captions`；兩者都有時優先使用 WebVTT。
+沒有可用字幕檔時，`auto` 會將音訊交給 Whisper，對影片則套用 OCR 再退回 Whisper 的
+一般策略。`ocr` 與 `hybrid` 需要影片串流。本機 `--plan` 使用 FFprobe 並讀取內容雜湊，
+不連線、不下載媒體或模型。
+
 ## 執行前計畫
 
 使用 `--plan` 檢查全新執行將採取的動作；此時尚未下載任何字幕或媒體檔案：
 
 ```bash
-./.venv/bin/youtubetext URL --plan
-./.venv/bin/youtubetext URL_1 URL_2 --plan --json
+./.venv/bin/youtubetext INPUT --plan
+./.venv/bin/youtubetext INPUT_1 INPUT_2 --plan --json
 ```
 
-執行前計畫會為每個 URL 發出網路中繼資料請求，並報告：
+遠端 URL 的執行前計畫會發出網路中繼資料請求；本機輸入則就地檢查。回報內容包括：
 
 - 來源中繼資料與時長；
 - 平台宣告的最佳字幕軌；
@@ -203,7 +249,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 不會取樣影格或執行 OCR/Whisper；不會建立輸出目錄；也不會讀取或寫入續跑狀態。
 
 計畫採用快取假設 `no-resume-reuse`。因此，稍後使用 `--resume` 執行時，可能會
-略過計畫中顯示為必需的工作。`--plan` 和 `--resume` 不能同時使用。多個 URL
+略過計畫中顯示為必需的工作。`--plan` 和 `--resume` 不能同時使用。多個輸入
 會並行檢查，結果維持輸入順序，且一個中繼資料失敗不會隱藏其他計畫。
 
 ## 續跑與快取
@@ -211,14 +257,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 明確啟用可重複使用的本機狀態：
 
 ```bash
-./.venv/bin/youtubetext URL --resume
+./.venv/bin/youtubetext INPUT --resume
 ```
 
-YouTubeText 仍會先檢查平台是否提供了新的字幕。快取未命中時，yt-dlp 可繼續
+遠端 URL 仍會先檢查最新的平台字幕；本機字幕檔則重新讀取。快取未命中時，yt-dlp 可繼續
 中斷的 `.part` 下載；已完成的媒體檔案會直接重複使用；本機 OCR 引擎則會在
 每批最多 32 個影格全部成功辨識後儲存原始 OCR 觀察結果。含有影格錯誤的批次
 不會寫入檢查點，而會在下次執行時重試。取樣圖片會在辨識後逐批刪除；若有寫入
-檢查點，則會先安全儲存再刪除。Whisper 推論目前還不能從中間位置續跑。
+檢查點，則會先安全儲存再刪除。
+
+啟用 `--resume` 時，Whisper 會為每個已完成區塊儲存檢查點。每塊最多 300 秒，
+與下一塊重疊 2 秒；磁碟上同時只有一個暫存音訊區塊。媒體內容、模型、語言、
+引擎版本與分塊設定一致時，可重複使用已完成區塊；中斷的區塊會重新執行。
+重疊的重複段落會保守去重，不合併不同文字或發生於不同時間的重複語句。
+短檔案可直接執行；無法判斷本機媒體時長時，Whisper 會直接執行，不儲存分塊檢查點。
 
 OCR 空白的額外 Whisper 檢查若失敗，仍會匯出原逐字稿，但啟用 `--resume` 時，
 媒體與 OCR 檢查點會保留為未完成任務，不會寫入已完成逐字稿快取。下次
@@ -245,7 +297,7 @@ OCR 空白的額外 Whisper 檢查若失敗，仍會匯出原逐字稿，但啟�
 ./.venv/bin/youtubetext cache --json
 ```
 
-在 macOS 上，只移除失敗或中斷任務的媒體與 OCR 檢查點，同時保留所有已完成的逐字稿：
+在 macOS 上，只移除失敗或中斷任務的媒體與 OCR/Whisper 檢查點，同時保留所有已完成的逐字稿：
 
 ```bash
 ./.venv/bin/youtubetext cache clear-incomplete
@@ -261,13 +313,13 @@ OCR 空白的額外 Whisper 檢查若失敗，仍會匯出原逐字稿，但啟�
 針對受限制的影片，使用本機瀏覽器的登入狀態：
 
 ```bash
-./.venv/bin/youtubetext URL --cookies-from-browser safari
+./.venv/bin/youtubetext INPUT --cookies-from-browser safari
 ```
 
 或者提供 Netscape 格式的 Cookie 檔案：
 
 ```bash
-./.venv/bin/youtubetext URL --cookies-file /path/to/cookies.txt
+./.venv/bin/youtubetext INPUT --cookies-file /path/to/cookies.txt
 ```
 
 這兩個選項互斥。Cookie 內容絕不會寫入輸出目錄、中繼資料、JSON 結果或續跑
@@ -283,8 +335,8 @@ Safari 範例僅適用於 macOS；在 Windows 上請選擇 yt-dlp 支援且已�
 
 | 模式 | 行為 |
 | --- | --- |
-| `auto` | 優先使用平台字幕，然後是 OCR，最後是 Whisper。 |
-| `captions` | 要求平台字幕軌；沒有可用字幕時失敗。 |
+| `auto` | 優先使用平台字幕或本機字幕檔，再對影片使用 OCR、對音訊或退回路徑使用 Whisper。 |
+| `captions` | 要求可用的平台字幕軌或本機 SRT/VTT 字幕檔。 |
 | `ocr` | 忽略平台字幕，只讀取內嵌字幕。 |
 | `whisper` | 略過字幕和 OCR；直接執行本機語音辨識。 |
 | `hybrid` | 執行 OCR 和 Whisper；當兩者時間範圍重疊時，畫面可見字幕優先。 |
@@ -292,7 +344,7 @@ Safari 範例僅適用於 macOS；在 Windows 上請選擇 yt-dlp 支援且已�
 例如，強制使用 OCR：
 
 ```bash
-./.venv/bin/youtubetext URL --mode ocr --language zh-Hant
+./.venv/bin/youtubetext INPUT --mode ocr --language zh-Hant
 ```
 
 ## 語言
@@ -319,7 +371,7 @@ Whisper 時，`zh-Hans` 與 `zh-Hant` 都會傳成 `zh`；結果可能標示為
 另行設定一份依優先順序排列的平台字幕語言清單：
 
 ```bash
-./.venv/bin/youtubetext URL \
+./.venv/bin/youtubetext INPUT \
   --caption-language zh-Hant \
   --caption-language zh-Hans \
   --caption-language en
@@ -354,11 +406,28 @@ YouTubeText-output/
 `text` 與 `confidence`；時間以秒為單位保留原始精度。SRT 與 WebVTT 使用
 毫秒時間戳記。`--json` 回報結果與輸出檔案路徑；逐字稿內容請讀取 `segments.json`。
 
+## OCR 控制
+
+`--ocr-profile` 設定固定取樣間隔：`fast` 為 1 秒、`balanced`（預設）為 0.5 秒、
+`accurate` 為 0.25 秒。兩、三小時的影片仍保持相同密度，不再有全片 2,400 影格上限。
+影格以每批最多 32 個的方式串流處理，辨識後刪除。完全相同的裁切圖片可重複使用
+OCR 結果，同時保留每個取樣時間位置。
+
+`--ocr-region X Y WIDTH HEIGHT` 使用相對於影格的正規化座標，從左上角量起。
+預設值 `0 0.55 1 0.45` 涵蓋底部 45%。寬度與高度必須為正，且區域不可超出影格。
+
+```bash
+./.venv/bin/youtubetext INPUT --ocr-profile accurate --ocr-region 0 0.55 1 0.45
+```
+
+這是固定密度取樣與相同圖片重複使用。顯示時間短於所選間隔的字幕仍可能漏掉；
+提高取樣密度會增加處理工作量。
+
 ## 並行與資源控制
 
-`--jobs 0` 是預設值，會根據實體記憶體推導 URL 並行數上限：
+`--jobs 0` 是預設值，會根據實體記憶體推導輸入並行數上限：
 
-| 實體記憶體 | 自動 URL 任務數 |
+| 實體記憶體 | 自動輸入任務數 |
 | --- | ---: |
 | 少於 12 GiB | 1 |
 | 12–23 GiB | 2 |
@@ -370,10 +439,9 @@ YouTubeText-output/
 最多使用兩個，Windows 的 RapidOCR 使用一個。兩個平台都會序列化執行 Whisper，
 以限制記憶體與運算資源爭用。
 
-OCR 通常每秒取樣一個影格，並將長影片限制為最多 2,400 個影格。本機 OCR 引擎每批
-接收最多 32 個裁切影格，且這些圖片在辨識後一律逐批移除。使用 `--resume`
-時，全部成功辨識的批次會在刪除前寫入檢查點；含有影格錯誤的批次不會寫入
-檢查點，並會在下次執行時重試。檢查點會儲存時間戳記、內容雜湊與原始文字框，
+本機 OCR 引擎以串流方式每批接收最多 32 個裁切影格。使用 `--resume` 時，
+全部成功辨識的批次會在刪除前寫入檢查點；含有影格錯誤的批次不會寫入檢查點，
+並會在下次執行時重試。檢查點會儲存時間戳記、內容雜湊與原始文字框，
 絕不保留影格圖片或暫存路徑。
 
 ## Whisper 模型
@@ -420,14 +488,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 
 主要模組：
 
-- `sources/`：YouTube/Bilibili 中繼資料與平台字幕。
+- `sources/`：YouTube/Bilibili 中繼資料與有次數上限的平台候選字幕嘗試。
+- `inputs.py`：本機檔案中繼資料、內容識別與相鄰字幕檔。
 - `planning.py`：唯讀的執行前路徑與下載需求。
 - `media.py`：可續跑的媒體下載與有界影格取樣。
-- `resume.py`：逐字稿重複使用、任務鎖、OCR 檢查點與任務清理。
+- `resume.py`：逐字稿重複使用、任務鎖、OCR/Whisper 檢查點與任務清理。
 - `ocr/`：Apple Vision 或 RapidOCR 與內嵌字幕組合。
-- `asr/`：MLX Whisper 或 faster-whisper 與本機模型選擇。
+- `asr/`：MLX Whisper 或 faster-whisper、本機模型選擇與可續跑音訊分塊。
 - `acquisition.py`：字幕/OCR/Whisper 的權威路由政策。
-- `runtime.py`：主機資源偵測與保留順序的多 URL 排程。
+- `runtime.py`：主機資源偵測與保留順序的多輸入排程。
 - `export.py`：Markdown、TXT、SRT、WebVTT 與 JSON 輸出的分組原子寫入。
 - `cli.py`：終端介面。
 
@@ -436,11 +505,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 - macOS Apple Silicon 與 Windows x64 已通過自動化 CI 測試。Windows CI 也已使用真實本機 OCR、Whisper 模型，以及離線的命令列至匯出全流程進行驗證；實體 Windows 電腦上的真實影片端到端驗證仍待完成，公開網址也可能拒絕託管 CI 機器。
 - Windows 的 `cache clear-incomplete` 暫不可用；跨 junction 與 reparse point 的安全刪除仍需進一步驗證。
 - 平台存取取決於 yt-dlp，並可能受到地區、帳戶、Cookie 或平台變更的影響。
-- Apple Vision OCR 已針對畫面底部附近的字幕進行最佳化。其他版面或高度風格化
-  的文字可能需要使用 Whisper 模式。
+- 預設 OCR 裁切涵蓋畫面底部 45%；其他字幕位置可使用 `--ocr-region` 調整。
+  高度風格化的文字仍可能需要 Whisper 模式。
 - 已在 macOS 上實際驗證 Bilibili 影片的端到端轉錄；平台字幕相容性仍需在更多
   公開影片上進行測試。
-- Whisper 無法從推論過程的中間位置續跑。
+- Whisper 可從已完成區塊的邊界續跑；中斷的區塊會重新執行。
+- OCR 使用固定取樣間隔，即使在 `accurate` 模式，仍可能漏掉顯示時間短於 0.25 秒的字幕。
 - 時間空白與靜音檢查無法證明文字辨識準確或確實漏掉語音。長時間停頓與音樂
   仍可能需要人工檢查；目前尚未建立這些檢查的真實影片準確率基準。
 
@@ -450,3 +520,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 簽出可保留在 `reference/mediabrief/` 下；整個 `reference/` 目錄已刻意被 Git
 忽略，且不屬於此儲存庫。第三方軟體聲明請參閱
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
+
+0.2.0 變更請參閱 [CHANGELOG.md](../CHANGELOG.md)。
+
+YouTubeText 採用 [MIT 授權條款](../LICENSE)。

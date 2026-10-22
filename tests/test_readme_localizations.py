@@ -33,6 +33,14 @@ MACHINE_TERMS = (
     "duration_seconds",
     "covered_seconds",
     "long_gaps",
+    "INPUT [INPUT...]",
+    "file://",
+    "local-captions",
+    "--ocr-profile",
+    "--ocr-region",
+    "SHA-256",
+    "youtubetext-0.2.0-py3-none-macosx_13_0_arm64.whl",
+    "youtubetext-0.2.0-py3-none-any.whl",
     "large-v3-turbo",
 )
 

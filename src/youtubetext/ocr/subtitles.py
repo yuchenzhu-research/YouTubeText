@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from youtubetext.domain import TranscriptSegment
 
@@ -80,6 +80,7 @@ def subtitle_segments_from_frames(
     frame_duration_seconds: float,
     blank_tolerance_seconds: float | None = None,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    caption_options: Mapping[str, float] | None = None,
 ) -> tuple[TranscriptSegment, ...]:
     """Collapse chronologically ordered frame OCR into timed subtitle segments.
 
@@ -126,7 +127,10 @@ def subtitle_segments_from_frames(
         timestamp = float(timed_frame.timestamp_seconds)
         if not math.isfinite(timestamp) or timestamp < 0:
             raise ValueError("frame timestamps must be finite and non-negative")
-        text, confidence = caption_from_observations(timed_frame.frame.observations)
+        text, confidence = caption_from_observations(
+            timed_frame.frame.observations,
+            **(caption_options or {}),
+        )
         if not text:
             if active_text and timestamp - last_seen > tolerance:
                 flush()

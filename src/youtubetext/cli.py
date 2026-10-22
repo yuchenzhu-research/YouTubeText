@@ -49,12 +49,13 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     name="youtubetext",
     context_settings={"help_option_names": ["-h", "--help"]},
     help=(
-        "Export timestamped and clean transcripts from YouTube or Bilibili URLs.\n\n"
+        "Export timestamped and clean transcripts from YouTube or Bilibili URLs "
+        "and local audio/video files.\n\n"
         "Run 'youtubetext doctor' to inspect local requirements, or "
         "'youtubetext cache' to inspect local resume storage."
     ),
 )
-@click.argument("urls", nargs=-1, metavar="URL [URL...]")
+@click.argument("urls", nargs=-1, metavar="INPUT [INPUT...]")
 @click.option(
     "--output",
     "output_dir",
@@ -91,6 +92,17 @@ WHISPER_MODELS = ("auto", "base", "small", "large-v3-turbo")
     default="auto",
     show_default=True,
     help="Local Whisper model. Auto follows the host capacity plan.",
+)
+@click.option(
+    "--ocr-profile",
+    type=click.Choice(("fast", "balanced", "accurate")),
+    default="balanced", show_default=True,
+    help="OCR sampling density: 1, 2, or 4 frames per second.",
+)
+@click.option(
+    "--ocr-region", type=float, nargs=4,
+    default=(0.0, 0.55, 1.0, 0.45), show_default=True,
+    help="Subtitle crop X Y WIDTH HEIGHT, normalized from the top-left corner.",
 )
 @click.option(
     "--jobs",
@@ -143,6 +155,8 @@ def main(
     language: str,
     caption_languages: tuple[str, ...],
     whisper_model: str,
+    ocr_profile: str,
+    ocr_region: tuple[float, float, float, float],
     jobs: int,
     cookies_from_browser: str | None,
     cookies_file: Path | None,
@@ -195,6 +209,8 @@ def main(
             preferred_caption_languages=tuple(caption_languages),
             whisper_model=selected_model,
             output_dir=output_dir,
+            ocr_profile=ocr_profile,
+            ocr_region=ocr_region,
         )
         auth = (
             YtDlpAuth(browser=cookies_from_browser or "", cookie_file=cookies_file)

@@ -84,9 +84,15 @@ class YouTubeTextEngine:
 def _normalize_urls(urls: list[str]) -> list[str]:
     if not urls:
         raise ValueError("at least one URL is required")
-    normalized = [url.strip() for url in urls]
-    if any(not url for url in normalized):
+    if any(not url.strip() for url in urls):
         raise ValueError("URLs must not be empty")
+    normalized = [
+        url.strip()
+        if url.strip().lower().startswith(("http://", "https://", "file://"))
+        and not Path(url).expanduser().is_file()
+        else url
+        for url in urls
+    ]
     # Repeating a URL in one queue must not start competing writes to its
     # transcript directory. Keep the first occurrence and its input order.
     return list(dict.fromkeys(normalized))

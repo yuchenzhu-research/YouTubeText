@@ -2,7 +2,7 @@
 
 [English](../README.md) | [繁體中文](README.zh-Hant.md) | [简体中文](README.zh-Hans.md) | [Español](README.es.md) | 日本語
 
-YouTubeTextは、YouTubeおよびBilibiliの動画から、読みやすくタイムスタンプ付きの
+YouTubeTextは、YouTubeおよびBilibiliの動画やローカルの音声・動画ファイルから、読みやすくタイムスタンプ付きの
 文字起こしを生成するApple Silicon搭載macOSとWindows x64向けのターミナルツールです。タイムスタンプ
 付きMarkdownファイル、タイムスタンプなしの読みやすいMarkdownファイル、テキスト
 ファイル、SRT/WebVTT字幕、構造化された文字起こしセグメントとメタデータを出力します。
@@ -12,31 +12,38 @@ Ollama、クラウドAI APIも必要ありません。
 
 ## 機能
 
-- 1つのコマンドで、単一のURLまたは複数URLのキューを送信できます。
+- URL、ローカルパス、`file://`入力を同じキューに送信できます。
+- 最大5件の字幕候補を試し、隣接するSRT/WebVTTを`local-captions`として読み取ります。
+- `--ocr-profile`と`--ocr-region`でOCRのサンプリング密度と字幕領域を選択します。
 - YouTubeとBilibiliのソースを判別し、メタデータを読み取ります。
 - 利用可能な場合は、プラットフォームの手動字幕または自動字幕を優先します。
 - 利用可能なプラットフォーム字幕がない場合は、macOSではApple Vision、WindowsではRapidOCRで焼き込み字幕を読み取ります。
 - OCRを利用できない場合は、macOSではローカルのMLX Whisper、Windowsではfaster-whisperの音声認識にフォールバックします。
 - タイムスタンプ付きと、タイムスタンプなしの読みやすいMarkdown文字起こしを出力します。
 - SRT・WebVTT字幕と、文字起こし全文のセグメントを含むJSONを出力します。
-- 物理メモリと、WindowsではCPU性能からURL並行処理数を自動的に選択します。
+- 物理メモリと、WindowsではCPU性能から入力の並行処理数を自動的に選択します。
 - 完了した文字起こしを再利用し、中断されたメディアのダウンロードを再開し、
-  完了済みOCRバッチを再利用できます。
-- 字幕またはメディアファイルをダウンロードする前に、`--plan`でURLを確認できます。
-- 障害を分離し、1つのURLが失敗してもキュー内の残りをキャンセルしません。
+  完了済みOCRバッチとWhisperチャンクを再利用できます。
+- 字幕またはメディアファイルをダウンロードする前に、`--plan`で入力を確認できます。
+- 障害を分離し、1つの入力が失敗してもキュー内の残りをキャンセルしません。
 
 ## パイプライン
 
 ```text
-URLキュー
-  └─ プラットフォームを判別してメタデータを読み取る
-       ├─ 利用可能なプラットフォーム字幕 ─────────────→ 字幕を整形 ─────────→ 出力
+INPUTキュー（URL、ローカルパス、file://）
+  └─ ソースのメタデータを読み取る
+       ├─ 利用可能なプラットフォーム字幕／ローカル字幕 → 整形 → 出力
        └─ 利用可能な字幕なし
-            ├─ --resume のキャッシュヒット ─────────────────────────────→ 出力
-            └─ キャッシュミスまたは再開無効 → 解析用動画 → ローカルOCR
-                                                     ├─ 利用可能 → 出力
-                                                     └─ 利用不可 → Whisper → 出力
+            ├─ --resume キャッシュヒット → 出力
+            ├─ ローカル音声 → Whisper → 出力
+            └─ リモート／ローカル動画 → ストリーミングOCR
+                                        ├─ 利用可能 → 出力
+                                        └─ 利用不可 → Whisper → 出力
 ```
+
+プラットフォーム字幕のダウンロードや解析が失敗すると、既存の言語・種類の優先順で、
+最大5件の提示された候補を試します。すべて失敗した場合は長さを制限した警告で
+代替経路を説明し、追加のクラウドAPIは使用しません。
 
 字幕と利用可能なOCRの経路では、出力前に下記の条件に応じて時間の空白を確認します。
 
@@ -54,9 +61,9 @@ Whisperのために音声だけをダウンロードし、使用後に削除す�
 確認します。閾値は動画の長さの10%で、最小60秒、最大300秒です。90秒未満の動画や
 長さが不明な動画には、この判定を適用しません。
 
-`auto`モードでは、利用可能なプラットフォーム字幕やOCR結果に不審な空白があると、
-FFmpegで無音を確認します。OCRは解析用動画を再利用し、プラットフォーム字幕は
-確認用の音声だけをダウンロードします。空白区間が無音なら元の文章を保持します。
+`auto`モードでは、利用可能なプラットフォーム字幕、ローカル字幕、OCR結果に不審な空白があると、
+FFmpegで無音を確認します。OCRは解析用動画を再利用し、リモート字幕は確認用の音声だけをダウンロードします。
+ローカル字幕では元のメディアをその場所で読み取ります。空白区間が無音なら元の文章を保持します。
 無音ではない音声がある場合や確認できない場合はWhisperを実行し、元の文章を
 保持しながら、不審な空白と重なるWhisperのセグメントだけを統合します。
 Whisperが失敗した場合も、元の文字起こしを保持し、
@@ -75,14 +82,22 @@ SRTとWebVTTを再解析した結果、文章は`segments.json`と一致し、�
 最大0.51ミリ秒でした。[時刻のみのテストデータ](../tests/fixtures/ted_caption_timing.json)には
 字幕の文章を含めず、元の時刻と、冒頭・内部・末尾の欠落を意図的に加えた合計4件の
 オフライン回帰テストで使用します。これはプラットフォーム字幕の出力経路の検証です。
-実動画でのOCR/Whisperの精度や、より広いCER/WER評価は未実施です。
+より広い実動画のOCR/Whisper CER/WER評価は未実施です。
+
+生成メディアの基本動作テストでは、実際のMLX Whisper `base`で英語17語の音声を
+処理し、単語の編集誤りは0件でした。ネイティブApple Visionを`accurate`で6秒動画に
+適用し、各2秒の字幕3件をすべて認識しました。これらの小規模な生成例から、
+幅広い実動画の精度を判断することはできません。
+
+307.5秒の生成音声を実際に処理し、最初の300秒チャンクの完了後に中断して、
+残りのチャンクだけを再実行しました。一時音声チャンクは削除済みです。
 
 ## 必要条件
 
 - Apple Silicon Mac（`arm64`）とmacOS 13以降、または64ビットx86 Windows
 - Python 3.11–3.14
-- `PATH`から実行できるFFmpeg
-- macOSのみ：Apple Vision OCRヘルパーのビルドに使用するXcode Command Line Tools
+- `PATH`から実行できるFFmpegとFFprobe
+- Macのソースビルドのみ：Apple Vision OCRヘルパー用のXcode Command Line Tools
 - `uv`を推奨
 
 macOSでFFmpegがない場合は、Homebrewでインストールします。
@@ -91,7 +106,7 @@ macOSでFFmpegがない場合は、Homebrewでインストールします。
 brew install ffmpeg
 ```
 
-macOSでAppleのコマンドラインツールがない場合はインストールします。
+Macでソースからビルドする場合、Appleのコマンドラインツールがなければインストールします。
 
 ```bash
 xcode-select --install
@@ -99,8 +114,27 @@ xcode-select --install
 
 ## インストール
 
-両プラットフォームで現在サポートされているインストール方法は、ソースのチェックアウトです。
-YouTubeTextは、まだPyPIパッケージまたはビルド済みwheelとして公開されていません。
+両プラットフォームで、引き続きソースからのインストールをサポートします。
+0.2.0のmacOS ARM64 wheelは、ソースディレクトリ外の新規環境で基本動作を検証済みです。
+Apple Visionヘルパーを内蔵し、実行時にSwiftコンパイラーは不要です。Windows CIには
+汎用wheelのビルドを設定しましたが、その新しいwheelのWindowsでの検証は未実施です。
+PyPIやGitHub Releaseへの公開はまだ行っていません。
+
+ビルド済みmacOS wheelがある場合は、次のようにインストールします。
+
+```bash
+python -m pip install ./youtubetext-0.2.0-py3-none-macosx_13_0_arm64.whl
+```
+
+ビルド済みWindows wheelはPowerShellからインストールします。
+
+```powershell
+python -m pip install .\youtubetext-0.2.0-py3-none-any.whl
+```
+
+FFmpeg/FFprobeとPython 3.11–3.14は別途必要です。音声モデルは初回使用時に
+ダウンロードします。`youtubetext-0.2.0.tar.gz`を含むMacのソースインストールには、
+Xcode Command Line Toolsが必要です。以下はソースを取得してインストールする手順です。
 
 macOSでは次を実行します。
 
@@ -156,7 +190,7 @@ YouTubeとBilibiliのURLを、2つのURLタスクで並行処理するキュー�
 出力ディレクトリを選び、元の文字が繁体字中国語であることをヒントとして指定します。
 
 ```bash
-./.venv/bin/youtubetext URL \
+./.venv/bin/youtubetext INPUT \
   --output ~/Desktop/YouTubeText-output \
   --language zh-Hant
 ```
@@ -164,7 +198,7 @@ YouTubeとBilibiliのURLを、2つのURLタスクで並行処理するキュー�
 機械可読な結果を返します。
 
 ```bash
-./.venv/bin/youtubetext URL --json
+./.venv/bin/youtubetext INPUT --json
 ```
 
 すべてのオプションを表示します。
@@ -178,14 +212,33 @@ Windowsでは、PowerShellから`.venv\Scripts`内の実行ファイルを使用
 ```powershell
 .\.venv\Scripts\youtubetext.exe doctor
 .\.venv\Scripts\youtubetext.exe "https://www.youtube.com/watch?v=VIDEO_ID"
-.\.venv\Scripts\youtubetext.exe URL_1 URL_2 --jobs 2
-.\.venv\Scripts\youtubetext.exe URL --plan
-.\.venv\Scripts\youtubetext.exe URL --resume
+.\.venv\Scripts\youtubetext.exe INPUT_1 INPUT_2 --jobs 2
+.\.venv\Scripts\youtubetext.exe INPUT --plan
+.\.venv\Scripts\youtubetext.exe INPUT --resume
 .\.venv\Scripts\youtubetext.exe cache
 ```
 
 以降のコマンド例ではmacOSの実行ファイルパスを使います。Windowsでは
 `./.venv/bin/youtubetext`を`.\.venv\Scripts\youtubetext.exe`に置き換えてください。
+
+## ローカル入力
+
+CLIは`INPUT [INPUT...]`を受け付けます。リモートURL、ローカルの音声・動画パス、
+このコンピューターの`file://` URLを指定できます。空白を含むパスは引用符で囲んでください。
+
+```bash
+./.venv/bin/youtubetext "/path/to/video.mp4" "/path/to/audio.wav" --resume
+./.venv/bin/youtubetext "file:///path/to/video.mp4" --plan
+```
+
+元のファイルはその場所で読み取り、タスク領域へのコピーや削除は行いません。
+内容のSHA-256識別子により、元のバイトが変わると古いキャッシュは無効になります。
+同じ名前の隣接ファイル`video.vtt`や`video.srt`は、`auto`または`captions`で
+`local-captions`として利用されます。両方ある場合はWebVTTを優先します。
+利用可能な字幕がなければ、`auto`は音声をWhisperへ送り、動画には通常の
+OCRからWhisperへ進む方針を適用します。`ocr`と`hybrid`には動画ストリームが必要です。
+ローカルの`--plan`はFFprobeと内容ハッシュを使い、ネットワーク接続やメディア・モデルの
+ダウンロードは行いません。
 
 ## 実行前プラン
 
@@ -193,11 +246,12 @@ Windowsでは、PowerShellから`.venv\Scripts`内の実行ファイルを使用
 `--plan`で確認できます。
 
 ```bash
-./.venv/bin/youtubetext URL --plan
-./.venv/bin/youtubetext URL_1 URL_2 --plan --json
+./.venv/bin/youtubetext INPUT --plan
+./.venv/bin/youtubetext INPUT_1 INPUT_2 --plan --json
 ```
 
-実行前プランは、URLごとにネットワーク経由でメタデータを取得し、次の内容を報告します。
+リモートURLの実行前プランはネットワークでメタデータを取得し、ローカル入力は
+その場所で確認します。次の内容を報告します。
 
 - ソースのメタデータと再生時間
 - プラットフォームが提示する最適な字幕トラック
@@ -213,7 +267,7 @@ Windowsでは、PowerShellから`.venv\Scripts`内の実行ファイルを使用
 
 プランは`no-resume-reuse`というキャッシュの仮定を使用します。そのため、後から
 `--resume`で実行すると、必須と表示された処理が省略される場合があります。
-`--plan`と`--resume`は同時に使用できません。複数URLは並行して確認され、結果は
+`--plan`と`--resume`は同時に使用できません。複数の入力は並行して確認され、結果は
 入力順を維持します。また、1件のメタデータ取得失敗によって他のプランが非表示に
 なることはありません。
 
@@ -222,17 +276,23 @@ Windowsでは、PowerShellから`.venv\Scripts`内の実行ファイルを使用
 再利用可能なローカル状態を明示的に有効にします。
 
 ```bash
-./.venv/bin/youtubetext URL --resume
+./.venv/bin/youtubetext INPUT --resume
 ```
 
-YouTubeTextは、まずプラットフォームに新しい字幕がないかを引き続き確認します。
+リモートURLでは最新のプラットフォーム字幕を先に確認し、ローカル字幕は再度読み取ります。
 キャッシュミスの場合、yt-dlpは中断された`.part`ダウンロードを継続でき、完成済みの
 メディアファイルはそのまま再利用されます。また、ローカルOCRエンジンは最大32フレームの
 各バッチが正常に認識された後に、生のOCR観測結果を保存します。フレームエラーを
 含むバッチはチェックポイントに保存されず、次回の実行時に再試行されます。
 サンプリングした画像は、認識後に必ずバッチ単位で削除されます。チェックポイントを
-書き込む場合は、画像を削除する前に保存します。Whisperの推論は、まだ途中から
-再開できません。
+書き込む場合は、画像を削除する前に保存します。
+
+`--resume`では、Whisperの完了した各チャンクを保存します。各チャンクは最大300秒で、
+次と2秒重なります。一時音声チャンクは同時に1つだけ存在します。メディアの内容、モデル、
+言語、エンジンの版、分割設定が一致すると、完了したチャンクを再利用します。
+中断したチャンクは再実行します。重複除去は保守的に行い、異なる文章や異なる時刻の
+繰り返しは統合しません。短いファイルは直接処理できます。ローカルメディアの長さを
+確認できない場合は、チャンクのチェックポイントを使わずにWhisperを実行します。
 
 OCRの空白に対する追加のWhisper検証が失敗しても、元の文字起こしは出力されます。
 ただし`--resume`では、メディアとOCRチェックポイントは未完了タスクとして保持され、
@@ -264,7 +324,7 @@ Windowsでは、キャッシュはユーザーのプラットフォームキャ�
 ```
 
 macOSでは、完了済みの文字起こしをすべて保持したまま、失敗または中断したタスクのメディアと
-OCRチェックポイントだけを削除します。
+OCR/Whisperチェックポイントだけを削除します。
 
 ```bash
 ./.venv/bin/youtubetext cache clear-incomplete
@@ -281,13 +341,13 @@ OCRチェックポイントだけを削除します。
 制限付き動画には、ローカルブラウザのログイン状態を使用できます。
 
 ```bash
-./.venv/bin/youtubetext URL --cookies-from-browser safari
+./.venv/bin/youtubetext INPUT --cookies-from-browser safari
 ```
 
 または、Netscape形式のCookieファイルを指定します。
 
 ```bash
-./.venv/bin/youtubetext URL --cookies-file /path/to/cookies.txt
+./.venv/bin/youtubetext INPUT --cookies-file /path/to/cookies.txt
 ```
 
 2つのオプションは同時に使用できません。Cookieの内容が出力ディレクトリ、
@@ -305,8 +365,8 @@ Safariの例はmacOS専用です。Windowsでは、インストール済みでyt
 
 | モード | 動作 |
 | --- | --- |
-| `auto` | プラットフォーム字幕、OCR、Whisperの順に優先します。 |
-| `captions` | プラットフォーム字幕トラックを必須とし、利用できない場合は失敗します。 |
+| `auto` | プラットフォーム字幕やローカル字幕を優先し、動画にはOCR、音声や代替経路にはWhisperを使います。 |
+| `captions` | 利用可能なプラットフォーム字幕またはローカルSRT/VTT字幕が必要です。 |
 | `ocr` | プラットフォーム字幕を無視し、焼き込み字幕だけを読み取ります。 |
 | `whisper` | 字幕とOCRをスキップし、ローカル音声認識を直接実行します。 |
 | `hybrid` | OCRとWhisperを実行し、時間範囲が重なる場合は表示字幕を優先します。 |
@@ -314,7 +374,7 @@ Safariの例はmacOS専用です。Windowsでは、インストール済みでyt
 たとえば、OCRを強制します。
 
 ```bash
-./.venv/bin/youtubetext URL --mode ocr --language zh-Hant
+./.venv/bin/youtubetext INPUT --mode ocr --language zh-Hant
 ```
 
 ## 言語
@@ -343,7 +403,7 @@ macOSで`auto`を選択すると、Apple Visionはタイトルと投稿者の文
 プラットフォーム字幕の優先言語は、順序付きリストとして別途指定できます。
 
 ```bash
-./.venv/bin/youtubetext URL \
+./.venv/bin/youtubetext INPUT \
   --caption-language zh-Hant \
   --caption-language zh-Hans \
   --caption-language en
@@ -380,11 +440,29 @@ YouTubeText-output/
 `--json`は結果と出力ファイルのパスを返します。文字起こしの内容は
 `segments.json`を読み取ってください。
 
+## OCRの設定
+
+`--ocr-profile`は固定サンプリング間隔を指定します。`fast`は1秒、`balanced`
+（既定）は0.5秒、`accurate`は0.25秒です。2〜3時間の動画も同じ密度を維持し、
+動画全体の2,400フレーム上限はありません。最大32フレームずつ処理し、認識後に削除します。
+切り抜き画像が完全に同じ場合はOCR結果を再利用し、各サンプリング時刻は保持します。
+
+`--ocr-region X Y WIDTH HEIGHT`は左上から測る正規化座標です。既定の
+`0 0.55 1 0.45`は下部45%を対象にします。幅と高さは正の値で、領域全体を
+フレーム内に収める必要があります。
+
+```bash
+./.venv/bin/youtubetext INPUT --ocr-profile accurate --ocr-region 0 0.55 1 0.45
+```
+
+固定密度でサンプリングし、同一画像を再利用します。選択した間隔より短く表示される
+字幕は見逃す場合があります。密度を上げると処理量が増えます。
+
 ## 並行処理とリソース制御
 
-`--jobs 0`がデフォルトで、物理メモリからURLの並行処理数の上限を決定します。
+`--jobs 0`がデフォルトで、物理メモリから入力の並行処理数の上限を決定します。
 
-| 物理メモリ | 自動URLジョブ数 |
+| 物理メモリ | 自動入力ジョブ数 |
 | --- | ---: |
 | 12 GiB未満 | 1 |
 | 12–23 GiB | 2 |
@@ -396,12 +474,10 @@ WindowsではCPU性能に応じて自動値がさらに小さくなる場合が�
 macOSのApple Vision OCRは最大2件、WindowsのRapidOCRは1件を実行します。
 Whisperは両プラットフォームで直列に実行し、メモリと計算資源の競合を抑えます。
 
-OCRは通常1秒ごとに1フレームをサンプリングし、長い動画では2,400フレームを上限と
-します。ローカルOCRエンジンには、切り抜かれた最大32フレームのバッチが渡され、画像は認識後に
-必ずバッチ単位で削除されます。`--resume`を指定した場合、正常に認識されたバッチは
-削除前にチェックポイントへ保存されます。フレームエラーを含むバッチは保存されず、
-次回の実行時に再試行されます。チェックポイントに保存されるのは、タイムスタンプ、
-コンテンツハッシュ、生のテキストボックスであり、フレーム画像や一時パスは保存されません。
+OCRエンジンには最大32フレームのバッチを順次渡します。`--resume`では、
+正常に認識したバッチを画像の削除前に保存します。フレームエラーを含むバッチは
+保存せず、次回再試行します。チェックポイントには時刻、内容ハッシュ、生の文字領域を
+保存し、画像や一時パスは保存しません。
 
 ## Whisperモデル
 
@@ -449,14 +525,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 
 主要モジュール：
 
-- `sources/`：YouTube/Bilibiliのメタデータとプラットフォーム字幕。
+- `sources/`：YouTube/Bilibiliのメタデータと試行回数を制限した字幕候補の切り替え。
+- `inputs.py`：ローカルのメタデータ、内容識別、隣接字幕ファイル。
 - `planning.py`：読み取り専用の実行前プラン、処理経路、ダウンロード要件。
 - `media.py`：再開可能なメディアダウンロードと上限付きフレームサンプリング。
-- `resume.py`：文字起こしの再利用、タスクロック、OCRチェックポイント、タスクのクリーンアップ。
+- `resume.py`：文字起こしの再利用、タスクロック、OCR/Whisperチェックポイント、クリーンアップ。
 - `ocr/`：Apple VisionまたはRapidOCRと焼き込み字幕の組み立て。
-- `asr/`：MLX Whisperまたはfaster-whisperとローカルのモデル選択。
+- `asr/`：MLX Whisperまたはfaster-whisper、モデル選択、再開可能な音声チャンク。
 - `acquisition.py`：字幕/OCR/Whisper間の正式なルーティング方針。
-- `runtime.py`：ホストのリソース検出と、複数URLの順序を維持したスケジューリング。
+- `runtime.py`：ホストのリソース検出と、複数入力の順序を維持したスケジューリング。
 - `export.py`：Markdown、TXT、SRT、WebVTT、JSON出力をまとめてアトミックに書き込む処理。
 - `cli.py`：ターミナルインターフェース。
 
@@ -471,12 +548,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
   reparse pointをまたぐ安全な削除には、追加の検証が必要です。
 - プラットフォームへのアクセスはyt-dlpに依存し、地域、アカウント、Cookie、
   プラットフォームの変更による影響を受ける場合があります。
-- Apple Vision OCRは、フレーム下部付近の字幕向けに最適化されています。
-  その他のレイアウトや大きく装飾されたテキストでは、Whisperモードが必要になる
-  場合があります。
+- 既定のOCR領域は下部45%です。字幕の位置は`--ocr-region`で調整できますが、
+  大きく装飾された文字ではWhisperモードが必要な場合があります。
 - Bilibili動画のエンドツーエンドの文字起こしはmacOSで実際に検証済みです。
   プラットフォーム字幕の互換性は、公開動画を使ったより広範なテストが必要です。
-- Whisperは、推論途中の位置から再開できません。
+- Whisperは完了したチャンクの境界から再開し、中断したチャンクを再実行します。
+- OCRは固定間隔なので、`accurate`でも表示が0.25秒未満の字幕を見逃す場合があります。
 - 時間の空白や無音の確認は、文字起こしの正確さや音声の欠落を証明しません。
   長い休止や音楽は確認が必要になる場合があります。これらのチェックについて、
   実際の動画による精度評価はまだ確立されていません。
@@ -488,3 +565,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 `reference/`ディレクトリ全体は意図的にGitの対象外としており、このリポジトリには
 含まれません。サードパーティ製ソフトウェアに関する通知については、
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)を参照してください。
+
+0.2.0の変更は[CHANGELOG.md](../CHANGELOG.md)を参照してください。
+
+YouTubeTextは[MITライセンス](../LICENSE)で提供します。

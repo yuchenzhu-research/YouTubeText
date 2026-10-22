@@ -119,6 +119,7 @@ class ProcessingPlan:
                 "author": metadata.author,
                 "duration_seconds": metadata.duration_seconds,
                 "webpage_url": metadata.webpage_url,
+                "media_type": metadata.media_type,
             },
             "mode": self.mode.value,
             "advertised_subtitle": (
@@ -177,6 +178,35 @@ def build_processing_plan(
         if inspection.subtitle is not None
         else None
     )
+
+    if inspection.metadata.platform == "local":
+        is_audio = inspection.metadata.media_type == "audio"
+        if mode is ProcessingMode.CAPTIONS:
+            route = PlanRoute.PLATFORM_CAPTIONS
+            processable = subtitle is not None
+            reason = "Use the local sidecar subtitle file." if processable else "No local SRT/VTT sidecar subtitle is available."
+        elif mode is ProcessingMode.AUTO and subtitle is not None:
+            route, processable = PlanRoute.CAPTIONS_THEN_OCR_THEN_WHISPER, True
+            reason = "Read the local sidecar first; verify suspicious gaps against the original media without downloading it."
+        elif mode is ProcessingMode.WHISPER or (mode is ProcessingMode.AUTO and is_audio):
+            route, processable = PlanRoute.WHISPER, True
+            reason = "Transcribe the original local audio in place; no media download is needed."
+        elif is_audio:
+            route = PlanRoute.OCR if mode is ProcessingMode.OCR else PlanRoute.OCR_AND_WHISPER
+            processable, reason = False, "OCR and hybrid modes require a video stream."
+        else:
+            route = {
+                ProcessingMode.AUTO: PlanRoute.CAPTIONS_THEN_OCR_THEN_WHISPER if subtitle else PlanRoute.OCR_THEN_WHISPER,
+                ProcessingMode.OCR: PlanRoute.OCR,
+                ProcessingMode.HYBRID: PlanRoute.OCR_AND_WHISPER,
+            }[mode]
+            processable, reason = True, "Read local media in place; apply the selected caption/OCR/Whisper policy without downloading media."
+        return ProcessingPlan(
+            metadata=inspection.metadata, mode=mode, advertised_subtitle=subtitle,
+            route=route, subtitle_download_requirement=DownloadRequirement.NONE,
+            media_download_requirement=DownloadRequirement.NONE, media_purpose=None,
+            fallback_media_purpose=None, processable=processable, reason=reason,
+        )
 
     if mode is ProcessingMode.AUTO:
         if subtitle is not None:
