@@ -23,6 +23,8 @@ from .models import (
 )
 from .subtitles import parse_subtitle
 
+_MAX_SUBTITLE_ATTEMPTS = 5
+
 
 class Runner(Protocol):
     """Internal seam around the true external yt-dlp dependency."""
@@ -63,7 +65,8 @@ class SourceClient:
 
     ``inspect`` reads metadata and selects a caption candidate without
     downloading files. ``fetch`` uses the same inspection path and, if the
-    platform advertises captions, downloads only the selected subtitle. Neither
+    platform advertises captions, tries a bounded list of advertised tracks.
+    It never requests a translated track that was not advertised. Neither
     method downloads audio or video. ``None`` is a normal subtitle result and
     means the caller should use OCR or ASR. Recognized sources that fail
     inspection/download/parsing raise :class:`SourceFetchError` instead of
@@ -89,7 +92,7 @@ class SourceClient:
     ) -> SourceInspection:
         """Inspect metadata and caption availability without downloading files."""
 
-        inspection, _adapter, _request_url = self._inspect(
+        inspection, _adapter, _request_url, _candidates = self._inspect(
             url,
             preferred_languages=preferred_languages,
             include_subtitles=True,
@@ -104,30 +107,67 @@ class SourceClient:
         include_subtitles: bool = True,
         strict_subtitles: bool = True,
     ) -> SourceResult:
-        inspection, adapter, request_url = self._inspect(
+        inspection, adapter, request_url, candidates = self._inspect(
             url,
             preferred_languages=preferred_languages,
             include_subtitles=include_subtitles,
         )
-        selected = inspection.subtitle
-        if selected is None:
+        if not candidates:
             return SourceResult(metadata=inspection.metadata)
 
-        try:
-            subtitle = self._download_subtitle(
-                request_url,
-                adapter,
-                selected.language,
-                selected.kind,
-            )
-        except SourceFetchError as exc:
-            if strict_subtitles:
-                raise
+        failures: list[tuple[SubtitleAvailability, SourceFetchError]] = []
+        for candidate in candidates[:_MAX_SUBTITLE_ATTEMPTS]:
+            try:
+                subtitle = self._download_subtitle(
+                    request_url, adapter, candidate.language, candidate.kind,
+                )
+            except SourceFetchError as exc:
+                failures.append((candidate, exc))
+                continue
+            except (OSError, UnicodeError, ValueError) as exc:
+                failures.append((
+                    candidate,
+                    SourceFetchError("subtitle download", str(exc) or type(exc).__name__),
+                ))
+                continue
+            warnings = ()
+            if failures:
+                failed = "; ".join(
+                    f"{_track_label(track)}: {error.stage}"
+                    for track, error in failures
+                )
+                warnings = (
+                    f"Platform caption fallback: used {_track_label(candidate)} "
+                    f"after {len(failures)} failed track(s) ({failed}).",
+                )
             return SourceResult(
-                metadata=inspection.metadata,
-                warnings=(f"Platform captions could not be used: {exc}",),
+                metadata=inspection.metadata, subtitle=subtitle, warnings=warnings,
             )
-        return SourceResult(metadata=inspection.metadata, subtitle=subtitle)
+
+        detail = "; ".join(
+            f"{_track_label(track)}: {_bounded_message(str(error))}"
+            for track, error in failures
+        )
+        remaining = len(candidates) - len(failures)
+        limit = (
+            f" Attempt limit {_MAX_SUBTITLE_ATTEMPTS} reached; "
+            f"{remaining} other advertised track(s) were not tried."
+            if remaining
+            else ""
+        )
+        # Preserve the established single-track stage for callers that use it
+        # to distinguish download failures from parse failures.
+        stage = failures[0][1].stage if len(failures) == 1 else "subtitle candidates"
+        error = SourceFetchError(
+            stage,
+            f"all {len(failures)} attempted caption track(s) failed: {detail}.{limit}",
+        )
+        if strict_subtitles:
+            raise error from failures[-1][1]
+        return SourceResult(
+            metadata=inspection.metadata,
+            warnings=(f"Platform captions could not be used: {error}",),
+        )
 
     def _inspect(
         self,
@@ -135,7 +175,7 @@ class SourceClient:
         *,
         preferred_languages: Sequence[str],
         include_subtitles: bool,
-    ) -> tuple[SourceInspection, PlatformAdapter, str]:
+    ) -> tuple[SourceInspection, PlatformAdapter, str, tuple[SubtitleAvailability, ...]]:
         adapter = resolve_adapter(url)
         request_url = adapter.request_url(url)
         try:
@@ -155,23 +195,24 @@ class SourceClient:
 
         try:
             metadata = _metadata(url, adapter, info)
-            selected = (
-                _select_subtitle(
+            candidates = (
+                _rank_subtitles(
                     info,
                     adapter,
                     tuple(preferred_languages),
                 )
                 if include_subtitles
-                else None
+                else ()
             )
         except Exception as exc:
             raise SourceFetchError("metadata", str(exc) or type(exc).__name__) from exc
-        subtitle = (
-            SubtitleAvailability(language=selected[0], kind=selected[1])
-            if selected is not None
-            else None
+        subtitle = candidates[0] if candidates else None
+        return (
+            SourceInspection(metadata=metadata, subtitle=subtitle),
+            adapter,
+            request_url,
+            candidates,
         )
-        return SourceInspection(metadata=metadata, subtitle=subtitle), adapter, request_url
 
     def _download_subtitle(
         self,
@@ -304,6 +345,79 @@ def _select_subtitle(
     return _best_language(automatic, adapter.language_priority), SubtitleKind.AUTOMATIC
 
 
+def _rank_subtitles(
+    info: Mapping[str, Any],
+    adapter: PlatformAdapter,
+    preferred_languages: tuple[str, ...],
+) -> tuple[SubtitleAvailability, ...]:
+    """Keep the advertised first choice, then try the closest alternatives.
+
+    A matching automatic track is preferable to an unrelated manual language
+    after the first track fails. Different advertised languages remain a final
+    fallback and are always identified in the returned warning.
+    """
+
+    selected = _select_subtitle(info, adapter, preferred_languages)
+    if selected is None:
+        return ()
+    available = tuple(
+        (language, kind)
+        for field, kind in (
+            ("subtitles", SubtitleKind.MANUAL),
+            ("automatic_captions", SubtitleKind.AUTOMATIC),
+        )
+        for language in _available_languages(info.get(field))
+    )
+    explicit = tuple(
+        language.strip()
+        for language in preferred_languages
+        if language and language.strip().lower() != "auto"
+    )
+    source_language = info.get("language")
+    source_preferences = (
+        (source_language.strip(),)
+        if isinstance(source_language, str) and source_language.strip()
+        else ()
+    )
+    # Language groups outrank caption kind once a candidate has failed. Keep
+    # caller preference order; manual wins only within an equally close group.
+    preferences = (selected[0], *explicit, *source_preferences, *adapter.language_priority)
+
+    def rank(track: tuple[str, SubtitleKind]) -> tuple[int, int, int, str, str]:
+        language, kind = track
+        for index, preference in enumerate(preferences):
+            if _language_matches(language, preference, exact_only=False):
+                return (
+                    index,
+                    int(not _language_matches(language, preference, exact_only=True)),
+                    int(kind is SubtitleKind.AUTOMATIC),
+                    _language_key(language),
+                    language,
+                )
+        return (
+            len(preferences), 0, int(kind is SubtitleKind.AUTOMATIC),
+            _language_key(language), language,
+        )
+
+    ordered: list[SubtitleAvailability] = []
+    seen: set[tuple[str, SubtitleKind]] = set()
+    for language, kind in (selected, *sorted(available, key=rank)):
+        key = (_language_key(language), kind)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(SubtitleAvailability(language, kind))
+    return tuple(ordered)
+
+
+def _track_label(track: SubtitleAvailability) -> str:
+    return f"{track.kind.value} {track.language[:40]!r}"
+
+
+def _bounded_message(message: str) -> str:
+    normalized = " ".join(message.split())
+    return normalized if len(normalized) <= 180 else normalized[:177] + "..."
+
+
 def _available_languages(raw: object) -> tuple[str, ...]:
     if not isinstance(raw, Mapping):
         return ()
@@ -311,7 +425,9 @@ def _available_languages(raw: object) -> tuple[str, ...]:
     return tuple(
         str(language)
         for language, formats in raw.items()
-        if str(language).lower() not in ignored and bool(formats)
+        if str(language).strip()
+        and str(language).strip().lower() not in ignored
+        and bool(formats)
     )
 
 
