@@ -187,8 +187,17 @@ async def test_local_audio_auto_exports_and_resumes_without_touching_original(tm
 
 
 @pytest.mark.asyncio
-async def test_relative_filename_spaces_do_not_redirect_to_another_file(tmp_path, monkeypatch):
-    for name in (" clip.wav", "clip.wav", "clip.wav "):
+@pytest.mark.parametrize("names", [
+    pytest.param((" clip.wav", "clip.wav"), id="leading-spaces"),
+    pytest.param(
+        ("clip.wav", "clip.wav "), id="trailing-spaces",
+        marks=pytest.mark.skipif(
+            os.name == "nt", reason="Windows normalizes trailing spaces in filenames",
+        ),
+    ),
+])
+async def test_relative_filename_spaces_do_not_redirect_to_another_file(tmp_path, monkeypatch, names):
+    for name in names:
         (tmp_path / name).write_bytes(name.encode())
     monkeypatch.chdir(tmp_path)
     speech = Speech()
@@ -197,11 +206,11 @@ async def test_relative_filename_spaces_do_not_redirect_to_another_file(tmp_path
         asr_factory=lambda _model: speech, temp_root=tmp_path / "temporary",
     )
     results = await YouTubeTextEngine(pipeline, capacity()).process(
-        [" clip.wav", "clip.wav", "clip.wav "], TaskOptions(output_dir=tmp_path / "output"),
+        list(names), TaskOptions(output_dir=tmp_path / "output"),
     )
 
     assert all(result.succeeded for result in results)
-    assert {path.name for path in speech.paths} == {" clip.wav", "clip.wav", "clip.wav "}
+    assert {path.name for path in speech.paths} == set(names)
 
 
 @pytest.mark.asyncio
