@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -155,6 +156,30 @@ def test_help_and_version_do_not_require_a_url():
     assert "summary" not in help_result.output.lower()
     assert version_result.exit_code == 0
     assert "0.1.0" in version_result.output
+
+
+def test_successful_cli_exposes_uncertainty_warnings_without_interpreting_markup(monkeypatch, tmp_path):
+    task = successful_result(URL_1, tmp_path)
+    task = replace(task, transcript=replace(
+        task.transcript, warnings=("Long gap [needs-review]: check later speech",),
+    ))
+    install_fake_runtime(monkeypatch, [task])
+
+    result = CliRunner().invoke(cli.main, [URL_1])
+
+    assert result.exit_code == 0, result.output
+    assert "Warning: Long gap [needs-review]" in result.output
+
+
+def test_json_cli_exposes_coverage_report_without_promising_complete_text(monkeypatch, tmp_path):
+    install_fake_runtime(monkeypatch, [successful_result(URL_1, tmp_path)])
+
+    result = CliRunner().invoke(cli.main, [URL_1, "--json"])
+
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)["results"][0]["completeness"]
+    assert report["status"] == "unverified"
+    assert report["coverage_ratio"] is None
 
 
 @pytest.mark.parametrize(
@@ -451,6 +476,9 @@ def test_json_output_is_ordered_and_contains_no_progress(monkeypatch, tmp_path):
         "transcript-clean.md"
     )
     assert payload["results"][0]["output"]["text"].endswith("transcript.txt")
+    assert payload["results"][0]["output"]["srt"].endswith("transcript.srt")
+    assert payload["results"][0]["output"]["vtt"].endswith("transcript.vtt")
+    assert payload["results"][0]["output"]["segments"].endswith("segments.json")
     assert payload["results"][1]["error"] == "failed"
     assert "Metadata read" not in result.output
 

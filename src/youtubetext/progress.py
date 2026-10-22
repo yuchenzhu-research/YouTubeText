@@ -13,6 +13,7 @@ class Stage(str, Enum):
     CAPTIONS = "captions"
     DOWNLOAD = "download"
     OCR = "ocr"
+    VERIFY = "verify"
     WHISPER = "whisper"
     MERGE = "merge"
     EXPORT = "export"

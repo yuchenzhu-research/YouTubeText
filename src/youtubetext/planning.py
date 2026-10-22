@@ -193,6 +193,8 @@ def build_processing_plan(
                 reason=(
                     "The advertised caption will be tried first; OCR and Whisper "
                     "remain fallbacks until that track is downloaded and validated. "
+                    "Long caption gaps can instead trigger audio-only verification "
+                    "and Whisper supplementation. "
                     "If analysis video is unavailable, Whisper can retry with audio."
                 ),
             )
@@ -208,7 +210,8 @@ def build_processing_plan(
             processable=True,
             reason=(
                 "No platform caption is advertised; OCR will run first and Whisper "
-                "will be used if OCR is not usable. If analysis video is unavailable, "
+                "will be used if OCR is not usable or long OCR gaps need speech "
+                "verification. If analysis video is unavailable, "
                 "Whisper can retry with audio."
             ),
         )

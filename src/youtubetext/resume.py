@@ -359,6 +359,14 @@ class LocalResumeStore:
 
             session = _ResumeSession(task_root, persistent=True)
             transcript = await work(session)
+            if transcript.verification_pending:
+                return ResumeResult(
+                    transcript,
+                    warning=(
+                        "Speech verification is pending; incomplete task media was "
+                        "retained so a later --resume run can retry verification."
+                    ),
+                )
             saved = await run_blocking(self._transcripts.save, transcript, options)
             if not saved:
                 return ResumeResult(

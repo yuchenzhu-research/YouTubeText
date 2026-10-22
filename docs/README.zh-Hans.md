@@ -5,9 +5,9 @@
 YouTubeText 是一款适用于 Apple Silicon macOS 与 Windows x64 的终端工具，可将 YouTube 和
 Bilibili 视频转换为干净且带时间戳的文字稿。它会导出一份带时间戳的
 Markdown 文件、一份不含时间戳的干净 Markdown 文件、一份文本文件，以及
-结构化元数据。
+SRT/WebVTT 字幕、结构化文字稿片段和元数据。
 
-YouTubeText 只提取完整文字。它不会总结视频、分析论点，也不需要 LLM、
+YouTubeText 提取文字稿。它不会总结视频、分析论点，也不需要 LLM、
 Ollama 或云端 AI API。
 
 ## 功能
@@ -18,6 +18,7 @@ Ollama 或云端 AI API。
 - 没有可用的平台字幕轨时，在 macOS 使用 Apple Vision、在 Windows 使用 RapidOCR 读取内嵌字幕。
 - OCR 无法使用时，在 macOS 回退到本地 MLX Whisper、在 Windows 回退到 faster-whisper 语音识别。
 - 同时导出带时间戳和干净、不含时间戳的 Markdown 文字稿。
+- 导出 SRT、WebVTT 字幕，以及包含文字稿全文片段的 JSON。
 - 根据物理内存，以及 Windows 上的 CPU 容量，自动选择 URL 并行数。
 - 复用已完成的文字稿、续传中断的媒体下载，以及复用已完成的 OCR 批次。
 - 下载任何字幕或媒体文件前，使用 `--plan` 检查 URL。
@@ -36,10 +37,40 @@ URL 队列
                                                         └─ 不可用 → Whisper → 导出
 ```
 
-平台字幕路径绝不下载视频。字幕文件是小型的临时输入。普通运行会将 OCR 和
+字幕和可用 OCR 路径都会在导出前，按下方条件进行时间空白检查。
+
+平台字幕没有可疑时间空白时，不需要下载媒体。字幕文件是小型的临时输入。
+在 `auto` 模式下，可疑的字幕空白可能触发仅音频下载，用于检查和 Whisper；
+这份音频会保存在运行后移除的临时目录中。普通运行会将 OCR 和
 Whisper 媒体保存在受监管的单次运行临时目录中，并在运行结束时移除。使用
 `--resume` 时，媒体会存储在用户缓存的 `tasks/` 目录下，在中断后保留，
-并在成功后移除。
+并在成功后移除；OCR 空白检查仍待完成时则保留。
+
+## 完整性检查
+
+导出前，YouTubeText 会检查文字稿片段之前、之间和之后的长时间空白。
+可疑空白阈值为视频时长的 10%，最低 60 秒、最高 300 秒。短于 90 秒或
+时长未知的视频不使用此规则判断。
+
+在 `auto` 模式下，可用的平台字幕或 OCR 结果若有可疑空白，会接受 FFmpeg
+静音检查。OCR 复用分析视频；平台字幕则只下载音频进行检查。空白区间
+若是静音，就保留原文；若有非静音音频或无法完成检查，就运行 Whisper，
+只合并与可疑空白重叠的 Whisper 片段，保留原文。Whisper 若失败，仍会保留原文字稿并明确警告
+无法确认完整性。强制 `captions` 和 `ocr` 模式会保留所选方法，返回长时间
+空白警告，不会额外启动语音识别。
+
+两份 JSON 文件和 `--json` 结果都包含 `completeness` 报告，字段有 `status`、`coverage_ratio`、
+`duration_seconds`、`covered_seconds` 和 `long_gaps`（每项包含 `start_seconds`
+和 `end_seconds`）。`needs-review` 或 `unverified` 等状态只记录评估结果，
+任何状态都不保证文字稿完整。所有警告也会显示在终端。
+
+实际联网验证使用一支 [TED 视频](https://www.youtube.com/watch?v=iG9CE55wbtY)
+（1,203 秒、427 个英文人工字幕片段），成功导出全部七种文件。重新解析 SRT 和
+WebVTT 后，文字与 `segments.json` 一致，时间误差不超过 0.51 毫秒。
+[仅含时间的测试数据](../tests/fixtures/ted_caption_timing.json)不保留字幕文字，
+覆盖四项离线回归测试：原始时间，以及人为加入的开头、中段、结尾遗漏。
+此验证覆盖平台字幕导出；实际视频的 OCR/Whisper 准确率和更广泛的 CER/WER
+基准测试仍待执行。
 
 ## 系统要求
 
@@ -189,6 +220,11 @@ YouTubeText 仍会先检查平台是否提供了新的字幕。缓存未命中�
 检查点，而会在下次运行时重试。采样图像会在识别后逐批删除；如果有写入检查点，
 则会先安全保存再删除。Whisper 推理目前还不能从中间位置断点续跑。
 
+OCR 空白的额外 Whisper 检查若失败，仍会导出原文字稿，但启用 `--resume` 时，
+媒体和 OCR 检查点会保留为未完成任务，不会写入已完成文字稿缓存。下次
+`--resume` 会重试检查，并复用已下载成功的媒体和已完成的 OCR 批次。
+字幕检查始终使用运行后移除的临时目录，即使启用 `--resume`，也会重新检查平台字幕。
+
 在 macOS 上，已完成的结构化文字稿存储在：
 
 ```text
@@ -299,13 +335,24 @@ YouTubeText-output/
     transcript.md
     transcript-clean.md
     transcript.txt
+    transcript.srt
+    transcript.vtt
+    segments.json
     metadata.json
 ```
 
 - `transcript.md`：包含每个片段时间戳的完整 Markdown 文字稿。
 - `transcript-clean.md`：不含时间轴标记的完整 Markdown 文字稿。
 - `transcript.txt`：含时间戳的纯文本。
-- `metadata.json`：来源、语言、提取方法、片段数量和警告。
+- `transcript.srt`：含编号的字幕片段，可用于支持 SRT 的播放器和编辑器。
+- `transcript.vtt`：WebVTT 字幕片段，可用于网页播放器和其他兼容工具。
+- `segments.json`：文字稿全文，包含每个片段的开始和结束时间。
+- `metadata.json`：来源、语言、提取方法、片段数量、警告和完整性评估。
+
+`segments.json` 使用 `schema_version: 1`，包含来源元数据、语言、提取方法、
+警告、完整性评估和有序的 `segments` 列表。每个片段都有 `start_seconds`、`end_seconds`、
+`text` 和 `confidence`；时间以秒为单位保留原始精度。SRT 和 WebVTT 使用
+毫秒时间戳。`--json` 返回结果和输出文件路径；文字稿内容请读取 `segments.json`。
 
 ## 并行与资源控制
 
@@ -331,7 +378,8 @@ OCR 通常每秒采样一帧，并将长视频限制为最多 2,400 帧。本地
 
 ## Whisper 模型
 
-Whisper 只会在字幕和内嵌字幕均不可用，或选择 `whisper` / `hybrid` 模式时运行。
+Whisper 会在字幕和内嵌字幕均不可用、`auto` 需要补充可疑空白，或选择
+`whisper` / `hybrid` 模式时运行。
 模型会在首次使用时下载，然后从本地模型缓存中复用。在 macOS 上，标准
 Hugging Face 缓存中已有的兼容 MLX 权重也会复用。Windows 使用 faster-whisper
 和独立缓存中的 CTranslate2 权重。
@@ -380,7 +428,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 - `asr/`：MLX Whisper 或 faster-whisper 与本地模型选择。
 - `acquisition.py`：字幕/OCR/Whisper 的权威路由策略。
 - `runtime.py`：主机资源检测和保持顺序的多 URL 调度。
-- `export.py`：Markdown、TXT 和 JSON 输出的分组原子写入。
+- `export.py`：Markdown、TXT、SRT、WebVTT 和 JSON 输出的分组原子写入。
 - `cli.py`：终端界面。
 
 ## 当前限制
@@ -393,6 +441,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 - 已在 macOS 上实际验证 Bilibili 视频的端到端转录；平台字幕兼容性仍需在更多
   公开视频上进行测试。
 - Whisper 无法从推理过程的中间位置断点续跑。
+- 时间空白和静音检查无法证明文字识别准确或确实漏掉语音。长时间停顿和音乐
+  仍可能需要人工检查；目前尚未建立这些检查的真实视频准确率基准。
 
 ## 参考资料与声明
 

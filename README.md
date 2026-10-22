@@ -4,10 +4,10 @@ English | [繁體中文](docs/README.zh-Hant.md) | [简体中文](docs/README.zh
 
 YouTubeText is a terminal tool for Apple Silicon macOS and Windows x64 that turns
 YouTube and Bilibili videos into clean, timestamped transcripts. It exports a timestamped
-Markdown file, a clean Markdown file without timestamps, a text file, and
-structured metadata.
+Markdown file, a clean Markdown file without timestamps, a text file,
+SRT/WebVTT subtitles, structured transcript segments, and metadata.
 
-YouTubeText extracts complete text only. It does not summarize videos, analyze
+YouTubeText extracts transcripts. It does not summarize videos, analyze
 arguments, or require an LLM, Ollama, or a cloud AI API.
 
 ## Features
@@ -20,6 +20,7 @@ arguments, or require an LLM, Ollama, or a cloud AI API.
 - Fall back to local MLX Whisper on macOS or faster-whisper on Windows when OCR
   is not usable.
 - Export both timestamped and clean, no-timestamp Markdown transcripts.
+- Export SRT and WebVTT subtitles and full transcript segments as JSON.
 - Automatically choose URL concurrency from physical memory and, on Windows,
   CPU capacity.
 - Reuse completed transcripts, resume interrupted media downloads, and reuse
@@ -40,11 +41,45 @@ URL queue
                                                             └─ unusable → Whisper → Export
 ```
 
-The platform-caption path never downloads the video. Caption files are small,
-temporary inputs. Normal runs keep OCR and Whisper media in a supervised,
+Caption and usable-OCR routes include the conditional gap checks below before export.
+
+Platform captions with no suspicious timing gaps need no media download. Caption
+files are small, temporary inputs. In `auto` mode, suspicious caption gaps can
+trigger an audio-only download for verification and Whisper; this audio is kept
+in a disposable temporary directory. Normal runs keep OCR and Whisper media in a supervised,
 per-run temporary directory and remove it when the run ends. With `--resume`,
 media is stored under the user cache's `tasks/` directory, retained after an
-interruption, and removed after success.
+interruption, and removed after success unless OCR gap verification is still pending.
+
+## Completeness checks
+
+Before export, YouTubeText checks for long gaps before, between, and after
+transcript segments. The gap threshold is 10% of the video duration,
+with a minimum of 60 seconds and a maximum of 300 seconds. Videos
+shorter than 90 seconds or with unknown duration are not judged by this rule.
+
+In `auto` mode, a usable platform caption or OCR result with suspicious gaps
+receives an FFmpeg silence check. OCR reuses its analysis video; platform
+captions download only audio for this check. Quiet gaps keep the original text.
+If the check finds non-silent audio or cannot verify the gap, Whisper runs and
+only its cues overlapping suspicious gaps are merged, preserving the original text. If Whisper fails,
+the original transcript is retained with an explicit uncertainty warning.
+Forced `captions` and `ocr` modes retain the selected method and report long-gap
+warnings without starting additional speech recognition.
+
+Both JSON files and the `--json` result include a `completeness` report with `status`, `coverage_ratio`,
+`duration_seconds`, `covered_seconds`, and `long_gaps` (each with `start_seconds`
+and `end_seconds`). A status such as `needs-review` or `unverified` records the
+assessment; no status guarantees that the transcript is complete. All warnings
+are also shown in the terminal.
+
+Live validation used a [TED video](https://www.youtube.com/watch?v=iG9CE55wbtY)
+(1,203 seconds, 427 manual English caption segments) and exported all seven files.
+Re-parsing SRT and WebVTT reproduced the `segments.json` text with at most
+0.51 milliseconds of timing error. The [timing-only fixture](tests/fixtures/ted_caption_timing.json)
+retains no caption text and supports four offline regressions: original timings
+and injected leading, internal, and trailing omissions. This covers platform-caption
+export; live OCR/Whisper accuracy and broader CER/WER benchmarks remain untested.
 
 ## Requirements
 
@@ -201,6 +236,13 @@ errors is not checkpointed and is retried on the next run. Sampled images are
 deleted batch by batch after recognition; when a checkpoint is written, it is
 saved before deletion. Whisper inference cannot yet resume from the middle.
 
+If optional Whisper verification of OCR gaps fails, the original transcript is
+still exported, but its media and OCR checkpoints remain incomplete under
+`--resume`; no completed transcript is cached. The next `--resume` run retries
+verification while reusing successfully downloaded media and completed OCR
+batches. Caption verification always uses a disposable temporary directory and
+checks fresh platform captions, including when `--resume` is enabled.
+
 On macOS, completed structured transcripts are stored under:
 
 ```text
@@ -320,13 +362,26 @@ YouTubeText-output/
     transcript.md
     transcript-clean.md
     transcript.txt
+    transcript.srt
+    transcript.vtt
+    segments.json
     metadata.json
 ```
 
 - `transcript.md`: complete Markdown transcript with per-segment timestamps.
 - `transcript-clean.md`: complete Markdown transcript without timeline markers.
 - `transcript.txt`: plain text with timestamps.
-- `metadata.json`: source, language, extraction method, segment count, and warnings.
+- `transcript.srt`: numbered subtitle cues for players and editors that support SRT.
+- `transcript.vtt`: WebVTT subtitle cues for web players and other compatible tools.
+- `segments.json`: full transcript text with each segment's start and end times.
+- `metadata.json`: source, language, extraction method, segment count, warnings, and completeness assessment.
+
+`segments.json` uses `schema_version: 1` and includes source metadata, language,
+extraction method, warnings, completeness assessment, and an ordered `segments` list. Each segment has
+`start_seconds`, `end_seconds`, `text`, and `confidence`; times retain their
+original precision in seconds. SRT and WebVTT use millisecond timestamps.
+`--json` reports the result and output file paths; read `segments.json` for the
+transcript itself.
 
 ## Concurrency and resource control
 
@@ -354,8 +409,9 @@ paths.
 
 ## Whisper models
 
-Whisper runs only when captions and burned-in subtitles are unusable, or when
-`whisper` / `hybrid` mode is selected. A model is downloaded on first use and
+Whisper runs when captions and burned-in subtitles are unusable, when `auto`
+needs to supplement suspicious gaps, or when `whisper` / `hybrid` mode is
+selected. A model is downloaded on first use and
 then reused from a local model cache. On macOS, compatible MLX weights already
 present in the standard Hugging Face cache are reused as well. Windows uses
 faster-whisper with CTranslate2 weights in a separate cache.
@@ -404,7 +460,7 @@ Primary modules:
 - `asr/`: MLX Whisper or faster-whisper and local model selection.
 - `acquisition.py`: the authoritative captions/OCR/Whisper routing policy.
 - `runtime.py`: host resource detection and ordered multi-URL scheduling.
-- `export.py`: grouped atomic writes for Markdown, TXT, and JSON outputs.
+- `export.py`: grouped atomic writes for Markdown, TXT, SRT, WebVTT, and JSON outputs.
 - `cli.py`: terminal interface.
 
 ## Current limitations
@@ -422,6 +478,9 @@ Primary modules:
 - Bilibili end-to-end transcription has been exercised live on macOS; platform
   caption compatibility still needs broader testing across public videos.
 - Whisper cannot resume from an intermediate inference position.
+- Timing-gap and silence checks do not prove transcription accuracy or missing
+  speech. Long pauses and music can require review; no real-video accuracy
+  benchmark has yet been established for these checks.
 
 ## Reference and notices
 

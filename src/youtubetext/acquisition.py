@@ -26,6 +26,12 @@ from .domain import (
     TranscriptMethod,
     TranscriptSegment,
 )
+from .completeness import (
+    AudioActivity,
+    CoverageGap,
+    FFmpegAudioActivity,
+    assess_completeness,
+)
 from .media import FrameSampler, MediaDownloader, MediaPurpose, SampledFrame
 from .ocr import (
     OCRFrame,
@@ -80,6 +86,12 @@ class FrameProvider(Protocol):
     ) -> tuple[SampledFrame, ...]: ...
 
 
+class AudioActivityProvider(Protocol):
+    def check(
+        self, media_path: Path, gaps: Sequence[CoverageGap],
+    ) -> AudioActivity: ...
+
+
 class TranscriptPipeline:
     """Turn one supported URL into a normalized transcript.
 
@@ -95,6 +107,7 @@ class TranscriptPipeline:
         sources: SourceProvider | None = None,
         media: MediaProvider | None = None,
         frames: FrameProvider | None = None,
+        audio_activity: AudioActivityProvider | None = None,
         ocr: OCRProvider | None = None,
         asr_factory: ASRFactory | None = None,
         backends: LocalBackends | None = None,
@@ -111,6 +124,7 @@ class TranscriptPipeline:
         self._sources = sources or SourceClient(auth=auth)
         self._media = media or MediaDownloader(auth=auth)
         self._frames = frames or FrameSampler()
+        self._audio_activity = audio_activity or FFmpegAudioActivity()
         self._ocr = ocr or _required_backends(selected_backends).ocr
         self._asr_factory = (
             asr_factory or _required_backends(selected_backends).asr_factory
@@ -182,6 +196,36 @@ class TranscriptPipeline:
             ProcessingMode.CAPTIONS,
         }
         if source.subtitle is not None and use_platform_caption:
+            transcript = Transcript(
+                metadata=source.metadata,
+                language=source.subtitle.language,
+                method=TranscriptMethod.PLATFORM_CAPTIONS,
+                segments=source.subtitle.segments,
+                warnings=source.warnings,
+            )
+            if options.mode is ProcessingMode.AUTO and assess_completeness(
+                transcript.segments, source.metadata.duration_seconds,
+            ).gaps:
+                # A fresh platform track must never be replaced by a cached
+                # fallback. Verification media is disposable even with resume.
+                try:
+                    verification = await EphemeralResumeStore(self._temporary_root()).run(
+                        source.metadata,
+                        options,
+                        lambda session: self._verify_platform_caption(
+                            transcript, options, gates, progress, session,
+                        ),
+                    )
+                    transcript = verification.transcript
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    transcript = _with_warning(
+                        replace(transcript, verification_pending=True),
+                        "Could not verify long text gaps because temporary media "
+                        "storage was unavailable; retained the platform captions. "
+                        "Review the uncovered intervals.",
+                    )
             cleanup_warning = await self._resume.discard_incomplete(
                 source.metadata,
                 options,
@@ -196,20 +240,17 @@ class TranscriptPipeline:
                     1.0,
                 )
             )
-            return Transcript(
-                metadata=source.metadata,
-                language=source.subtitle.language,
-                method=TranscriptMethod.PLATFORM_CAPTIONS,
-                segments=source.subtitle.segments,
+            return _with_completeness_warning(replace(
+                transcript,
                 warnings=tuple(
                     dict.fromkeys(
                         (
-                            *source.warnings,
+                            *transcript.warnings,
                             *((cleanup_warning,) if cleanup_warning else ()),
                         )
                     )
                 ),
-            )
+            ))
         if options.mode is ProcessingMode.CAPTIONS:
             raise TranscriptAcquisitionError("no platform caption track is available")
 
@@ -240,10 +281,121 @@ class TranscriptPipeline:
                 )
             )
         )
-        return replace(
+        return _with_completeness_warning(replace(
             resumed.transcript,
             metadata=source.metadata,
             warnings=warnings,
+        ))
+
+    async def _verify_platform_caption(
+        self,
+        transcript: Transcript,
+        options: TaskOptions,
+        gates: ResourceGates,
+        progress: ProgressSink,
+        session: ResumeSession,
+    ) -> Transcript:
+        try:
+            media_path = await session.media(
+                MediaPurpose.AUDIO,
+                lambda directory: self._download(
+                    transcript.metadata.url, directory, MediaPurpose.AUDIO, gates, progress,
+                ),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return _with_warning(
+                replace(transcript, verification_pending=True),
+                "Could not verify long text gaps because audio was unavailable; "
+                "retained the platform captions. Review the uncovered intervals.",
+            )
+        return await self._verify_text_gaps(
+            transcript, media_path, options, gates, progress,
+        )
+
+    async def _verify_text_gaps(
+        self,
+        transcript: Transcript,
+        media_path: Path,
+        options: TaskOptions,
+        gates: ResourceGates,
+        progress: ProgressSink,
+    ) -> Transcript:
+        report = assess_completeness(
+            transcript.segments, transcript.metadata.duration_seconds,
+        )
+        if not report.gaps:
+            return transcript
+        await progress(ProgressEvent(
+            transcript.metadata.url, Stage.VERIFY, "Checking audio in long text gaps",
+        ))
+        try:
+            async with gates.asr:
+                activity = await run_blocking(
+                    self._audio_activity.check, media_path, report.gaps,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            activity = AudioActivity.UNKNOWN
+        if activity is AudioActivity.SILENT:
+            return _with_warning(
+                transcript,
+                "Long text gaps contain only quiet audio at the activity-check "
+                "threshold; retained the original text. This does not certify "
+                "transcription accuracy.",
+            )
+        await progress(ProgressEvent(
+            transcript.metadata.url, Stage.VERIFY,
+            "Long text gaps need speech verification; checking with Whisper",
+        ))
+        try:
+            speech = await self._run_whisper(
+                transcript.metadata.url, media_path, options, gates, progress,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return _with_warning(
+                replace(transcript, verification_pending=True),
+                "Could not verify long text gaps with Whisper; retained the "
+                "original text. Review the uncovered intervals.",
+            )
+        supplements = tuple(segment for segment in speech.segments if any(
+            (
+                segment.start_seconds < gap.end_seconds
+                and segment.end_seconds > gap.start_seconds
+            ) or (
+                segment.start_seconds == segment.end_seconds
+                and gap.start_seconds <= segment.start_seconds < gap.end_seconds
+            )
+            for gap in report.gaps
+        ))
+        # Verification fills suspect intervals only. A translated platform
+        # track must not be duplicated by source-language speech elsewhere.
+        merged = merge_ocr_and_asr(transcript.segments, supplements)
+        if merged == transcript.segments:
+            return _with_warning(
+                transcript,
+                "Checked long text gaps with Whisper, but no additional text "
+                "was recovered. Review the uncovered intervals.",
+            )
+        method = (
+            TranscriptMethod.PLATFORM_CAPTIONS_WHISPER
+            if transcript.method is TranscriptMethod.PLATFORM_CAPTIONS
+            else TranscriptMethod.OCR_WHISPER
+        )
+        return replace(
+            transcript,
+            method=method,
+            segments=merged,
+            warnings=tuple(dict.fromkeys((
+                *transcript.warnings,
+                "Checked long text gaps with Whisper and retained the original "
+                "text alongside additional speech recognition; review any "
+                "remaining gaps or conflicting text.",
+            ))),
         )
 
     async def _acquire_fallback(
@@ -328,12 +480,16 @@ class TranscriptPipeline:
             )
 
         if options.mode is ProcessingMode.AUTO and usable_ocr:
-            return _ocr_transcript(
+            transcript = _ocr_transcript(
                 source.metadata,
                 options.language,
                 ocr_segments,
                 method=self._ocr_method,
                 warnings=(*source.warnings, *ocr_warnings),
+            )
+            assert video_path is not None
+            return await self._verify_text_gaps(
+                transcript, video_path, options, gates, progress,
             )
 
         if video_path is None:
@@ -530,6 +686,19 @@ class TranscriptPipeline:
             )
         await progress(ProgressEvent(url, Stage.WHISPER, "Speech transcription complete", 1.0))
         return result
+
+
+def _with_warning(transcript: Transcript, warning: str) -> Transcript:
+    return replace(
+        transcript, warnings=tuple(dict.fromkeys((*transcript.warnings, warning))),
+    )
+
+
+def _with_completeness_warning(transcript: Transcript) -> Transcript:
+    report = assess_completeness(
+        transcript.segments, transcript.metadata.duration_seconds,
+    )
+    return _with_warning(transcript, report.warning) if report.warning else transcript
 
 
 def _caption_languages(options: TaskOptions) -> tuple[str, ...]:

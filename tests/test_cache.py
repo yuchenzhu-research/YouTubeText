@@ -175,6 +175,21 @@ def test_payload_with_a_different_source_identity_is_rejected(tmp_path):
     assert cache.load(transcript.metadata, options) is None
 
 
+def test_unverified_transcript_cache_is_not_reused_after_gap_verification_change(tmp_path, monkeypatch):
+    transcript = sample_transcript()
+    options = TaskOptions()
+    cache = TranscriptCache(tmp_path / "cache")
+    current_revision = cache_module.PIPELINE_REVISION
+    monkeypatch.setattr(
+        cache_module, "PIPELINE_REVISION",
+        "fallback-transcript-v2-windows-ocr-language-checked",
+    )
+    assert cache.save(transcript, options)
+    monkeypatch.setattr(cache_module, "PIPELINE_REVISION", current_revision)
+
+    assert cache.load(transcript.metadata, options) is None
+
+
 def test_cache_filename_contains_no_url_or_auth_identity(tmp_path):
     transcript = sample_transcript()
     cache = TranscriptCache(

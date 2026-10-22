@@ -21,7 +21,7 @@ from .domain import (
 )
 
 CACHE_SCHEMA = 1
-PIPELINE_REVISION = "fallback-transcript-v2-windows-ocr-language-checked"
+PIPELINE_REVISION = "fallback-transcript-v3-audio-gap-verification"
 
 
 class TranscriptCache:
@@ -55,6 +55,8 @@ class TranscriptCache:
             if payload.get("pipeline_revision") != PIPELINE_REVISION:
                 return None
             transcript = _decode_transcript(payload["transcript"])
+            if transcript.verification_pending:
+                return None
             if not _same_source_identity(transcript.metadata, metadata):
                 return None
             return transcript
@@ -62,6 +64,8 @@ class TranscriptCache:
             return None
 
     def save(self, transcript: Transcript, options: TaskOptions) -> bool:
+        if transcript.verification_pending:
+            return False
         path = self._path(transcript.metadata, options)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
         payload = {
@@ -128,6 +132,7 @@ def _encode_transcript(transcript: Transcript) -> dict[str, Any]:
         "method": transcript.method.value,
         "segments": [asdict(segment) for segment in transcript.segments],
         "warnings": list(transcript.warnings),
+        "verification_pending": transcript.verification_pending,
     }
 
 
@@ -171,4 +176,5 @@ def _decode_transcript(raw: object) -> Transcript:
         method=TranscriptMethod(str(raw["method"])),
         segments=segments,
         warnings=tuple(str(warning) for warning in warnings_raw),
+        verification_pending=bool(raw.get("verification_pending", False)),
     )

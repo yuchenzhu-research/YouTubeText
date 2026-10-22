@@ -1,15 +1,18 @@
-"""Atomic timed/clean Markdown, TXT and JSON transcript export."""
+"""Atomic Markdown, TXT, SRT, WebVTT and JSON transcript export."""
 from __future__ import annotations
 
+import html
 import json
 import re
 import threading
 import unicodedata
 import uuid
 from dataclasses import asdict
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from .domain import OutputFiles, Transcript, TranscriptSegment
+from .completeness import assess_completeness
 
 _WINDOWS_RESERVED_NAMES = {
     "con",
@@ -106,6 +109,73 @@ def render_text(transcript: Transcript) -> str:
     ) + "\n"
 
 
+def _subtitle_timestamp(milliseconds: int, *, separator: str) -> str:
+    seconds, millis = divmod(milliseconds, 1000)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}{separator}{millis:03d}"
+
+
+def _cue_milliseconds(segment: TranscriptSegment) -> tuple[int, int]:
+    # Round the whole timestamp before splitting it, so 59.9995 carries into
+    # the next minute. A zero/sub-millisecond cue still needs a positive span
+    # in subtitle formats; segments.json retains the original precise values.
+    start = int(
+        (Decimal(str(segment.start_seconds)) * 1000).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    end = int(
+        (Decimal(str(segment.end_seconds)) * 1000).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    return start, max(start + 1, end)
+
+
+def _render_subtitle_cues(transcript: Transcript, *, separator: str) -> str:
+    blocks = []
+    for index, segment in enumerate(transcript.segments, start=1):
+        start, end = _cue_milliseconds(segment)
+        timing = (
+            f"{_subtitle_timestamp(start, separator=separator)} --> "
+            f"{_subtitle_timestamp(end, separator=separator)}"
+        )
+        # Escape before writing cue text: literal tags must stay visible and
+        # WebVTT forbids a raw '-->' inside cue text.
+        text = html.escape(segment.text, quote=False)
+        blocks.append(f"{index}\n{timing}\n{text}")
+    return "\n\n".join(blocks) + "\n"
+
+
+def render_srt(transcript: Transcript) -> str:
+    return _render_subtitle_cues(transcript, separator=",")
+
+
+def render_vtt(transcript: Transcript) -> str:
+    return "WEBVTT\n\n" + _render_subtitle_cues(transcript, separator=".")
+
+
+def segments_payload(transcript: Transcript) -> dict:
+    """Version 1: source metadata and ordered, unrounded transcript segments.
+
+    Language and extraction_method apply to every segment. Confidence is null
+    when the extraction backend does not provide a score.
+    """
+
+    return {
+        "schema_version": 1,
+        "metadata": asdict(transcript.metadata),
+        "language": transcript.language,
+        "extraction_method": transcript.method.value,
+        "warnings": list(transcript.warnings),
+        "completeness": assess_completeness(
+            transcript.segments, transcript.metadata.duration_seconds,
+        ).as_dict(),
+        "segments": [asdict(segment) for segment in transcript.segments],
+    }
+
+
 def metadata_payload(transcript: Transcript) -> dict:
     meta = asdict(transcript.metadata)
     return {
@@ -114,6 +184,9 @@ def metadata_payload(transcript: Transcript) -> dict:
         "extraction_method": transcript.method.value,
         "segment_count": len(transcript.segments),
         "warnings": list(transcript.warnings),
+        "completeness": assess_completeness(
+            transcript.segments, transcript.metadata.duration_seconds,
+        ).as_dict(),
     }
 
 
@@ -151,6 +224,13 @@ def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:
     clean_markdown = directory / "transcript-clean.md"
     text = directory / "transcript.txt"
     metadata = directory / "metadata.json"
+    result = OutputFiles(
+        directory=directory,
+        markdown=markdown,
+        clean_markdown=clean_markdown,
+        text=text,
+        metadata=metadata,
+    )
     outputs = (
         (markdown, render_markdown(transcript)),
         (clean_markdown, render_clean_markdown(transcript)),
@@ -164,13 +244,14 @@ def export_transcript(transcript: Transcript, output_root: Path) -> OutputFiles:
             )
             + "\n",
         ),
+        (result.srt, render_srt(transcript)),
+        (result.vtt, render_vtt(transcript)),
+        (
+            result.segments,
+            json.dumps(segments_payload(transcript), ensure_ascii=False, indent=2)
+            + "\n",
+        ),
     )
     with _EXPORT_LOCK:
         _atomic_write_many(outputs)
-    return OutputFiles(
-        directory=directory,
-        markdown=markdown,
-        clean_markdown=clean_markdown,
-        text=text,
-        metadata=metadata,
-    )
+    return result

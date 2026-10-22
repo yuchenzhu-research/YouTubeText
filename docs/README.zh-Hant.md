@@ -5,9 +5,9 @@
 YouTubeText 是一款適用於 Apple Silicon macOS 與 Windows x64 的終端工具，可將 YouTube 和
 Bilibili 影片轉換為乾淨且帶時間戳記的逐字稿。它會匯出一份帶時間戳記的
 Markdown 檔案、一份不含時間戳記的乾淨 Markdown 檔案、一份文字檔案，以及
-結構化中繼資料。
+SRT/WebVTT 字幕、結構化逐字稿段落與中繼資料。
 
-YouTubeText 只擷取完整文字。它不會總結影片、分析論點，也不需要 LLM、
+YouTubeText 擷取逐字稿。它不會總結影片、分析論點，也不需要 LLM、
 Ollama 或雲端 AI API。
 
 ## 功能
@@ -18,6 +18,7 @@ Ollama 或雲端 AI API。
 - 沒有可用的平台字幕軌時，在 macOS 使用 Apple Vision、在 Windows 使用 RapidOCR 讀取內嵌字幕。
 - OCR 無法使用時，在 macOS 退回到本機 MLX Whisper、在 Windows 退回到 faster-whisper 語音辨識。
 - 同時匯出帶時間戳記與乾淨、不含時間戳記的 Markdown 逐字稿。
+- 匯出 SRT、WebVTT 字幕，以及包含逐字稿全文段落的 JSON。
 - 根據實體記憶體，以及 Windows 上的 CPU 容量，自動選擇 URL 並行數。
 - 重複使用已完成的逐字稿、續傳中斷的媒體下載，以及重複使用已完成的 OCR 批次。
 - 下載任何字幕或媒體檔案前，使用 `--plan` 檢查 URL。
@@ -36,10 +37,40 @@ URL 佇列
                                                     └─ 不可用 → Whisper → 匯出
 ```
 
-平台字幕路徑絕不下載影片。字幕檔案是小型的暫存輸入。一般執行會將 OCR 和
+字幕與可用 OCR 路徑都會在匯出前，依下方條件進行時間空白檢查。
+
+平台字幕沒有可疑時間空白時，不需要下載媒體。字幕檔案是小型的暫存輸入。
+在 `auto` 模式下，可疑的字幕空白可能觸發僅音訊下載，用於檢查與 Whisper；
+這份音訊會保存在執行後移除的暫存目錄中。一般執行會將 OCR 和
 Whisper 媒體保存在受監管的單次執行暫存目錄中，並在執行結束時移除。使用
 `--resume` 時，媒體會儲存在使用者快取的 `tasks/` 目錄下，在中斷後保留，
-並在成功後移除。
+並在成功後移除；OCR 空白檢查仍待完成時則保留。
+
+## 完整性檢查
+
+匯出前，YouTubeText 會檢查逐字稿段落之前、之間與之後的長時間空白。
+可疑空白門檻為影片時長的 10%，最低 60 秒、最高 300 秒。短於 90 秒或
+時長未知的影片不使用此規則判斷。
+
+在 `auto` 模式下，可用的平台字幕或 OCR 結果若有可疑空白，會接受 FFmpeg
+靜音檢查。OCR 重複使用分析影片；平台字幕則只下載音訊進行檢查。空白區間
+若是靜音，就保留原文；若有非靜音音訊或無法完成檢查，就執行 Whisper，
+只合併與可疑空白重疊的 Whisper 段落，保留原文。Whisper 若失敗，仍會保留原逐字稿並明確警告
+無法確認完整性。強制 `captions` 與 `ocr` 模式會保留所選方法，回報長時間
+空白警告，不會額外啟動語音辨識。
+
+兩份 JSON 檔案與 `--json` 結果都包含 `completeness` 報告，欄位有 `status`、`coverage_ratio`、
+`duration_seconds`、`covered_seconds` 與 `long_gaps`（每項包含 `start_seconds`
+與 `end_seconds`）。`needs-review` 或 `unverified` 等狀態只記錄評估結果，
+任何狀態都不保證逐字稿完整。所有警告也會顯示在終端。
+
+實際連線驗證使用一支 [TED 影片](https://www.youtube.com/watch?v=iG9CE55wbtY)
+（1,203 秒、427 個英文人工字幕段落），成功匯出全部七種檔案。重新解析 SRT 與
+WebVTT 後，文字與 `segments.json` 一致，時間誤差不超過 0.51 毫秒。
+[僅含時間的測試資料](../tests/fixtures/ted_caption_timing.json)不保留字幕文字，
+涵蓋四項離線回歸測試：原始時間，以及人工加入的開頭、中段、結尾遺漏。
+此驗證涵蓋平台字幕匯出；實際影片的 OCR/Whisper 準確率與更廣泛的 CER/WER
+基準測試仍待執行。
 
 ## 系統需求
 
@@ -189,6 +220,11 @@ YouTubeText 仍會先檢查平台是否提供了新的字幕。快取未命中�
 不會寫入檢查點，而會在下次執行時重試。取樣圖片會在辨識後逐批刪除；若有寫入
 檢查點，則會先安全儲存再刪除。Whisper 推論目前還不能從中間位置續跑。
 
+OCR 空白的額外 Whisper 檢查若失敗，仍會匯出原逐字稿，但啟用 `--resume` 時，
+媒體與 OCR 檢查點會保留為未完成任務，不會寫入已完成逐字稿快取。下次
+`--resume` 會重試檢查，並重複使用已下載成功的媒體與已完成的 OCR 批次。
+字幕檢查一律使用執行後移除的暫存目錄，即使啟用 `--resume`，也會重新檢查平台字幕。
+
 在 macOS 上，已完成的結構化逐字稿儲存在：
 
 ```text
@@ -299,13 +335,24 @@ YouTubeText-output/
     transcript.md
     transcript-clean.md
     transcript.txt
+    transcript.srt
+    transcript.vtt
+    segments.json
     metadata.json
 ```
 
 - `transcript.md`：包含每個段落時間戳記的完整 Markdown 逐字稿。
 - `transcript-clean.md`：不含時間軸標記的完整 Markdown 逐字稿。
 - `transcript.txt`：含時間戳記的純文字。
-- `metadata.json`：來源、語言、擷取方法、段落數量與警告。
+- `transcript.srt`：含編號的字幕段落，可用於支援 SRT 的播放器與編輯器。
+- `transcript.vtt`：WebVTT 字幕段落，可用於網頁播放器與其他相容工具。
+- `segments.json`：逐字稿全文，包含每個段落的開始與結束時間。
+- `metadata.json`：來源、語言、擷取方法、段落數量、警告與完整性評估。
+
+`segments.json` 使用 `schema_version: 1`，包含來源中繼資料、語言、擷取方法、
+警告、完整性評估與有序的 `segments` 清單。每個段落都有 `start_seconds`、`end_seconds`、
+`text` 與 `confidence`；時間以秒為單位保留原始精度。SRT 與 WebVTT 使用
+毫秒時間戳記。`--json` 回報結果與輸出檔案路徑；逐字稿內容請讀取 `segments.json`。
 
 ## 並行與資源控制
 
@@ -331,7 +378,8 @@ OCR 通常每秒取樣一個影格，並將長影片限制為最多 2,400 個影
 
 ## Whisper 模型
 
-Whisper 只會在字幕與內嵌字幕均不可用，或選擇 `whisper` / `hybrid` 模式時執行。
+Whisper 會在字幕與內嵌字幕均不可用、`auto` 需要補充可疑空白，或選擇
+`whisper` / `hybrid` 模式時執行。
 模型會在首次使用時下載，然後從本機模型快取中重複使用。在 macOS 上，標準
 Hugging Face 快取中已有的相容 MLX 權重也會重複使用。Windows 使用 faster-whisper
 與獨立快取中的 CTranslate2 權重。
@@ -380,7 +428,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 - `asr/`：MLX Whisper 或 faster-whisper 與本機模型選擇。
 - `acquisition.py`：字幕/OCR/Whisper 的權威路由政策。
 - `runtime.py`：主機資源偵測與保留順序的多 URL 排程。
-- `export.py`：Markdown、TXT 與 JSON 輸出的分組原子寫入。
+- `export.py`：Markdown、TXT、SRT、WebVTT 與 JSON 輸出的分組原子寫入。
 - `cli.py`：終端介面。
 
 ## 目前限制
@@ -393,6 +441,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 - 已在 macOS 上實際驗證 Bilibili 影片的端到端轉錄；平台字幕相容性仍需在更多
   公開影片上進行測試。
 - Whisper 無法從推論過程的中間位置續跑。
+- 時間空白與靜音檢查無法證明文字辨識準確或確實漏掉語音。長時間停頓與音樂
+  仍可能需要人工檢查；目前尚未建立這些檢查的真實影片準確率基準。
 
 ## 參考資料與聲明
 

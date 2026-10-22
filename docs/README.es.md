@@ -5,9 +5,10 @@
 YouTubeText es una herramienta de terminal para macOS con Apple Silicon y Windows x64 que
 convierte vídeos de YouTube y Bilibili en transcripciones limpias con marcas de
 tiempo. Exporta un archivo Markdown con marcas de tiempo, un archivo Markdown
-limpio sin ellas, un archivo de texto y metadatos estructurados.
+limpio sin ellas, un archivo de texto, subtítulos SRT/WebVTT y segmentos de
+transcripción y metadatos estructurados.
 
-YouTubeText solo extrae el texto completo. No resume vídeos, no analiza
+YouTubeText extrae transcripciones. No resume vídeos, no analiza
 argumentos ni requiere un LLM, Ollama o una API de IA en la nube.
 
 ## Funciones
@@ -18,6 +19,7 @@ argumentos ni requiere un LLM, Ollama o una API de IA en la nube.
 - Lee subtítulos incrustados con Apple Vision en macOS o RapidOCR en Windows cuando no hay una pista de la plataforma utilizable.
 - Recurre a MLX Whisper en macOS o faster-whisper en Windows cuando no se puede usar OCR.
 - Exporta transcripciones Markdown con marcas de tiempo y transcripciones limpias sin ellas.
+- Exporta subtítulos SRT y WebVTT y todos los segmentos de la transcripción en JSON.
 - Elige automáticamente la concurrencia de URLs según la memoria física y, en Windows, la capacidad de la CPU.
 - Reutiliza transcripciones terminadas, reanuda descargas multimedia
   interrumpidas y reutiliza lotes de OCR completados.
@@ -37,12 +39,53 @@ Cola de URLs
                                                                           └─ no utilizable → Whisper → Exportar
 ```
 
-La ruta de subtítulos de la plataforma nunca descarga el vídeo. Los archivos de
-subtítulos son entradas temporales pequeñas. Las ejecuciones normales guardan
+Las rutas de subtítulos y OCR utilizable incluyen las comprobaciones condicionales
+de huecos descritas a continuación antes de exportar.
+
+Los subtítulos de la plataforma sin huecos temporales sospechosos no requieren
+descargar medios. Sus archivos son entradas temporales pequeñas. En modo `auto`,
+los huecos sospechosos pueden provocar una descarga solo de audio para la
+comprobación y Whisper; ese audio se guarda en un directorio temporal desechable.
+Las ejecuciones normales guardan
 los medios para OCR y Whisper en un directorio temporal supervisado y exclusivo
 de cada ejecución, y lo eliminan al finalizar. Con `--resume`, los medios se
 guardan en el directorio `tasks/` de la caché del usuario, se conservan después
-de una interrupción y se eliminan tras una finalización correcta.
+de una interrupción y se eliminan tras una finalización correcta, salvo si sigue
+pendiente la verificación de huecos de OCR.
+
+## Comprobaciones de integridad
+
+Antes de exportar, YouTubeText busca huecos largos antes, entre y después de los
+segmentos de la transcripción. El umbral es el 10% de la duración del vídeo, con
+un mínimo de 60 segundos y un máximo de 300. Esta regla no se aplica a vídeos de
+menos de 90 segundos o de duración desconocida.
+
+En modo `auto`, los subtítulos de plataforma o resultados OCR utilizables con
+huecos sospechosos pasan por una comprobación de silencio con FFmpeg. OCR
+reutiliza el vídeo de análisis; los subtítulos de plataforma solo descargan
+audio para la comprobación. Si el hueco es silencioso, se conserva el texto
+original. Si contiene audio no silencioso o no se puede verificar, se ejecuta
+Whisper y solo se combinan sus segmentos que se solapan con los huecos
+sospechosos, conservando el texto original. Si Whisper
+falla, se conserva la transcripción original con una advertencia explícita de
+incertidumbre. Los modos forzados `captions` y `ocr` mantienen el método elegido
+y avisan de los huecos largos sin iniciar reconocimiento de voz adicional.
+
+Ambos archivos JSON y el resultado de `--json` incluyen un informe `completeness` con `status`,
+`coverage_ratio`, `duration_seconds`, `covered_seconds` y `long_gaps` (cada uno
+con `start_seconds` y `end_seconds`). Estados como `needs-review` o `unverified`
+registran la evaluación; ningún estado garantiza que la transcripción esté completa.
+Todas las advertencias también se muestran en el terminal.
+
+La validación en línea usó un [vídeo de TED](https://www.youtube.com/watch?v=iG9CE55wbtY)
+(1.203 segundos, 427 segmentos de subtítulos manuales en inglés) y exportó los
+siete archivos. Al volver a leer SRT y WebVTT, el texto coincidió con
+`segments.json`, con un error temporal máximo de 0,51 milisegundos. Los
+[datos de prueba solo temporales](../tests/fixtures/ted_caption_timing.json) no
+conservan texto de subtítulos y cubren cuatro regresiones sin conexión: tiempos
+originales y omisiones iniciales, internas y finales introducidas artificialmente.
+Esto valida la exportación de subtítulos de plataforma; siguen pendientes la
+precisión de OCR/Whisper con vídeos reales y evaluaciones más amplias de CER/WER.
 
 ## Requisitos
 
@@ -205,6 +248,14 @@ del reconocimiento; cuando se escribe un punto de control, se guarda antes de
 eliminarlas. La inferencia de Whisper todavía no puede reanudarse a mitad del
 proceso.
 
+Si falla la verificación adicional de huecos de OCR con Whisper, se exporta la
+transcripción original, pero con `--resume` se conservan sus medios y puntos de
+control de OCR como tarea incompleta, sin guardar una transcripción terminada en
+caché. La siguiente ejecución con `--resume` reintenta la verificación y reutiliza
+los medios descargados correctamente y los lotes OCR terminados. La verificación
+de subtítulos siempre usa un directorio temporal desechable y comprueba de nuevo
+los subtítulos de la plataforma, incluso con `--resume`.
+
 En macOS, las transcripciones estructuradas terminadas se guardan en:
 
 ```text
@@ -329,13 +380,26 @@ YouTubeText-output/
     transcript.md
     transcript-clean.md
     transcript.txt
+    transcript.srt
+    transcript.vtt
+    segments.json
     metadata.json
 ```
 
 - `transcript.md`: transcripción Markdown completa con marcas de tiempo por segmento.
 - `transcript-clean.md`: transcripción Markdown completa sin marcadores de línea temporal.
 - `transcript.txt`: texto sin formato con marcas de tiempo.
-- `metadata.json`: fuente, idioma, método de extracción, número de segmentos y advertencias.
+- `transcript.srt`: segmentos de subtítulos numerados para reproductores y editores compatibles con SRT.
+- `transcript.vtt`: segmentos de subtítulos WebVTT para reproductores web y otras herramientas compatibles.
+- `segments.json`: texto completo de la transcripción con los tiempos de inicio y fin de cada segmento.
+- `metadata.json`: fuente, idioma, método de extracción, número de segmentos, advertencias y evaluación de integridad.
+
+`segments.json` usa `schema_version: 1` e incluye metadatos de la fuente, idioma,
+método de extracción, advertencias, evaluación de integridad y una lista ordenada `segments`. Cada segmento
+contiene `start_seconds`, `end_seconds`, `text` y `confidence`; los tiempos
+conservan su precisión original en segundos. SRT y WebVTT usan marcas de tiempo
+en milisegundos. `--json` informa del resultado y las rutas de los archivos de
+salida; la transcripción en sí está en `segments.json`.
 
 ## Concurrencia y control de recursos
 
@@ -366,8 +430,9 @@ imágenes de fotogramas ni rutas temporales.
 
 ## Modelos de Whisper
 
-Whisper solo se ejecuta cuando los subtítulos de la plataforma y los subtítulos
-incrustados no se pueden usar, o cuando se selecciona el modo `whisper` /
+Whisper se ejecuta cuando los subtítulos de la plataforma y los subtítulos
+incrustados no se pueden usar, cuando `auto` necesita complementar huecos
+sospechosos o cuando se selecciona el modo `whisper` /
 `hybrid`. El modelo se descarga la primera vez que se usa y después se
 reutiliza desde una caché local de modelos. En macOS también se reutilizan los
 pesos MLX compatibles de la caché estándar de Hugging Face. Windows usa
@@ -418,7 +483,7 @@ Módulos principales:
 - `asr/`: MLX Whisper o faster-whisper y selección local del modelo.
 - `acquisition.py`: política de enrutamiento normativa entre subtítulos/OCR/Whisper.
 - `runtime.py`: detección de recursos del equipo y programación ordenada de varias URLs.
-- `export.py`: escrituras atómicas agrupadas para salidas Markdown, TXT y JSON.
+- `export.py`: escrituras atómicas agrupadas para salidas Markdown, TXT, SRT, WebVTT y JSON.
 - `cli.py`: interfaz de terminal.
 
 ## Limitaciones actuales
@@ -439,6 +504,9 @@ Módulos principales:
   compatibilidad con subtítulos todavía necesita pruebas más amplias en vídeos
   públicos.
 - Whisper no puede reanudarse desde una posición intermedia de inferencia.
+- Las comprobaciones de huecos y silencio no prueban la precisión de la
+  transcripción ni que falte voz. Las pausas largas y la música pueden requerir
+  revisión; estas comprobaciones aún no tienen una evaluación de precisión con vídeos reales.
 
 ## Referencia y avisos
 

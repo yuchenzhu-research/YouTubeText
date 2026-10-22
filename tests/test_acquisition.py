@@ -259,7 +259,7 @@ async def test_new_platform_caption_wins_over_cached_fallback(tmp_path):
     track = SubtitleTrack(
         "en",
         SubtitleKind.MANUAL,
-        (TranscriptSegment(0, 2, "New platform caption"),),
+        (TranscriptSegment(0, 120, "New platform caption"),),
     )
     second, _sources, media, _ocr, asr = pipeline(
         tmp_path / "second",
@@ -299,7 +299,7 @@ async def test_new_platform_caption_removes_abandoned_resume_media(tmp_path):
     track = SubtitleTrack(
         "zh-Hant",
         SubtitleKind.MANUAL,
-        (TranscriptSegment(0, 2, "平台后来提供的字幕"),),
+        (TranscriptSegment(0, 120, "平台后来提供的字幕"),),
     )
     instance, _sources, media, _ocr, asr = pipeline(
         tmp_path / "run",
@@ -375,7 +375,7 @@ async def test_platform_caption_short_circuits_media_and_models(tmp_path):
     track = SubtitleTrack(
         "en",
         SubtitleKind.MANUAL,
-        (TranscriptSegment(0, 2, "Platform text"),),
+        (TranscriptSegment(0, 120, "Platform text"),),
     )
     instance, sources, media, _ocr, asr = pipeline(tmp_path, subtitle=track)
 
@@ -440,7 +440,7 @@ async def test_auto_mode_falls_back_to_whisper_using_downloaded_video(tmp_path):
     assert result.text == "语音识别结果"
     assert media.purposes == [MediaPurpose.ANALYSIS_VIDEO]
     assert asr.calls == [("video.mp4", "auto")]
-    assert "used Whisper" in result.warnings[-1]
+    assert any("used Whisper" in warning for warning in result.warnings)
     assert result.warnings[0] == "Platform captions could not be used"
     assert not media.paths[0].exists()
 
@@ -579,7 +579,7 @@ async def test_windows_auto_can_use_captions_before_unsupported_ocr_language(tmp
     caption = SubtitleTrack(
         "ko",
         SubtitleKind.MANUAL,
-        (TranscriptSegment(0, 12, "플랫폼 자막을 사용합니다"),),
+        (TranscriptSegment(0, 120, "플랫폼 자막을 사용합니다"),),
     )
     instance, _sources, media, ocr, asr = pipeline(
         tmp_path,

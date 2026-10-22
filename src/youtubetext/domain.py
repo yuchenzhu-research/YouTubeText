@@ -17,6 +17,7 @@ class ProcessingMode(str, Enum):
 
 class TranscriptMethod(str, Enum):
     PLATFORM_CAPTIONS = "platform-captions"
+    PLATFORM_CAPTIONS_WHISPER = "platform-captions-whisper"
     APPLE_VISION_OCR = "apple-vision-ocr"
     RAPID_OCR = "rapidocr"
     MLX_WHISPER = "mlx-whisper"
@@ -82,6 +83,7 @@ class Transcript:
     method: TranscriptMethod
     segments: tuple[TranscriptSegment, ...]
     warnings: tuple[str, ...] = ()
+    verification_pending: bool = False
 
     def __post_init__(self) -> None:
         if not self.segments:
@@ -116,6 +118,18 @@ class OutputFiles:
     clean_markdown: Path
     text: Path
     metadata: Path
+
+    @property
+    def srt(self) -> Path:
+        return self.directory / "transcript.srt"
+
+    @property
+    def vtt(self) -> Path:
+        return self.directory / "transcript.vtt"
+
+    @property
+    def segments(self) -> Path:
+        return self.directory / "segments.json"
 
 
 @dataclass(frozen=True, slots=True)

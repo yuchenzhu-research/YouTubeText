@@ -15,6 +15,7 @@ from rich.console import Console
 from . import __version__
 from ._supervisor import RUN_TEMP_ENV, SUPERVISED_ENV, run_supervised
 from .acquisition import TranscriptPipeline
+from .completeness import assess_completeness
 from .doctor import DoctorReport, diagnose
 from .domain import ProcessingMode, TaskOptions, TaskResult
 from .engine import YouTubeTextEngine
@@ -370,6 +371,8 @@ def _render_results(results: list[TaskResult], console: Console) -> None:
                 f"[green]✓[/green] {result.transcript.metadata.title} "
                 f"→ {result.output.directory}"
             )
+            for warning in result.transcript.warnings:
+                console.print(f"  Warning: {warning}", style="yellow", markup=False)
         else:
             detail = result.error or "transcript was not produced"
             console.print(f"[red]✗[/red] {result.url}: {detail}")
@@ -495,6 +498,10 @@ def _result_payload(result: TaskResult) -> dict[str, Any]:
                 "language": result.transcript.language,
                 "method": result.transcript.method.value,
                 "warnings": list(result.transcript.warnings),
+                "completeness": assess_completeness(
+                    result.transcript.segments,
+                    result.transcript.metadata.duration_seconds,
+                ).as_dict(),
             }
         )
     if result.output is not None:
@@ -504,6 +511,9 @@ def _result_payload(result: TaskResult) -> dict[str, Any]:
             "clean_markdown": str(result.output.clean_markdown),
             "text": str(result.output.text),
             "metadata": str(result.output.metadata),
+            "srt": str(result.output.srt),
+            "vtt": str(result.output.vtt),
+            "segments": str(result.output.segments),
         }
     return payload
 

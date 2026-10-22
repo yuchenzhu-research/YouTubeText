@@ -12,7 +12,8 @@ from youtubetext.asr import ASRResult
 from youtubetext.domain import ProcessingMode, TaskOptions, TranscriptMethod, TranscriptSegment
 from youtubetext.media import MediaPurpose
 from youtubetext.runtime import CapacityPlan, HostProfile, ResourceGates
-from youtubetext.sources import SourceClient, SourceFetchError
+from youtubetext.sources import SourceClient
+from youtubetext.completeness import AudioActivity
 
 
 VIDEO_URL = "https://www.youtube.com/watch?v=partial123"
@@ -47,21 +48,23 @@ class CaptionRunner:
         return self.info
 
 
-def test_auto_source_rejects_caption_that_ends_near_start_of_known_video():
+def test_source_preserves_early_caption_for_audio_aware_pipeline_verification():
     result = SourceClient(CaptionRunner(duration=120)).fetch(
         VIDEO_URL,
         strict_subtitles=False,
     )
 
-    assert result.subtitle is None
-    assert any("incomplete" in warning.lower() for warning in result.warnings)
+    # Timing alone cannot distinguish missing words from a spoken intro
+    # followed by a long quiet interval.
+    assert result.subtitle is not None
+    assert result.subtitle.text == "Only the opening words"
 
 
 @pytest.mark.asyncio
-async def test_auto_pipeline_uses_speech_after_rejecting_early_caption(tmp_path):
+async def test_auto_pipeline_preserves_early_caption_and_recovers_later_speech(tmp_path):
     class Media:
         async def download(self, _url, directory, purpose):
-            assert purpose is MediaPurpose.ANALYSIS_VIDEO
+            assert purpose is MediaPurpose.AUDIO
             path = directory / "video.mp4"
             path.write_bytes(b"fake media")
             return path
@@ -83,12 +86,17 @@ async def test_auto_pipeline_uses_speech_after_rejecting_early_caption(tmp_path)
                 segments=(TranscriptSegment(20, 23, "Actual spoken content"),),
             )
 
+    class Activity:
+        def check(self, _path, _gaps):
+            return AudioActivity.ACTIVE
+
     pipeline = TranscriptPipeline(
         sources=SourceClient(CaptionRunner(duration=120)),
         media=Media(),
         frames=Frames(),
         ocr=OCR(),
         asr_factory=lambda _model: Speech(),
+        audio_activity=Activity(),
         temp_root=tmp_path,
     )
     gates = ResourceGates(
@@ -105,9 +113,9 @@ async def test_auto_pipeline_uses_speech_after_rejecting_early_caption(tmp_path)
         progress,
     )
 
-    assert transcript.method is TranscriptMethod.MLX_WHISPER
-    assert transcript.text == "Actual spoken content"
-    assert any("incomplete" in warning.lower() for warning in transcript.warnings)
+    assert transcript.method is TranscriptMethod.PLATFORM_CAPTIONS_WHISPER
+    assert transcript.text == "Only the opening words\nActual spoken content"
+    assert any("long" in warning.lower() for warning in transcript.warnings)
 
 
 @pytest.mark.parametrize("duration", [0, 80])
@@ -121,6 +129,6 @@ def test_unknown_or_short_duration_keeps_sparse_caption(duration):
     assert result.subtitle.text == "Only the opening words"
 
 
-def test_captions_only_reports_grossly_incomplete_track():
-    with pytest.raises(SourceFetchError, match="incomplete platform caption"):
-        SourceClient(CaptionRunner(duration=120)).fetch(VIDEO_URL)
+def test_sparse_caption_does_not_fail_source_validation_without_audio_evidence():
+    result = SourceClient(CaptionRunner(duration=120)).fetch(VIDEO_URL)
+    assert result.subtitle is not None
