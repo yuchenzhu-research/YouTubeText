@@ -107,7 +107,9 @@ xcode-select --install
 
 两个平台都继续支持从源码安装。0.2.0 的 macOS ARM64 wheel 已构建，并在源码
 目录之外的全新环境完成基本验证；它内附 Apple Vision 辅助程序，运行时不需要 Swift
-编译器。Windows CI 已配置为构建通用 wheel，但这份新版 wheel 尚未在 Windows 验证。
+编译器。macOS 和 Windows wheel 都已在[发布工作流](https://github.com/yuchenzhu-research/YouTubeText/actions/runs/39875296716)
+通过 CI 构建和全新隔离环境的安装检查。安装检查会运行 `--help` 和 `doctor`，
+不下载语音模型或运行语音识别。
 目前尚未发布到 PyPI 或创建 GitHub Release。
 
 取得已构建的 macOS wheel 后，可运行：

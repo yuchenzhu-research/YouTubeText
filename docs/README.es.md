@@ -126,8 +126,10 @@ xcode-select --install
 La instalación desde código fuente sigue siendo compatible en ambas plataformas.
 El wheel macOS ARM64 de 0.2.0 se ha construido y probado en un entorno nuevo fuera
 del repositorio; incluye el auxiliar Apple Vision y no necesita Swift para ejecutarse.
-Windows CI está configurado para crear un wheel portátil; ese nuevo wheel aún no
-se ha verificado en Windows. No se ha publicado en PyPI ni como GitHub Release.
+Los wheels de macOS y Windows superaron la compilación y la instalación en un
+entorno aislado nuevo en el [flujo de publicación de CI](https://github.com/yuchenzhu-research/YouTubeText/actions/runs/39875296716).
+La comprobación ejecuta `--help` y `doctor` sin descargar modelos de voz ni
+ejecutar reconocimiento. No se ha publicado en PyPI ni como GitHub Release.
 
 Si dispones del wheel macOS construido, instálalo con:
 

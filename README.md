@@ -121,8 +121,10 @@ xcode-select --install
 Source checkout remains supported on both platforms. A macOS ARM64 wheel for
 0.2.0 has been built and smoke-tested in a fresh environment outside the checkout;
 it includes the Apple Vision helper and requires no Swift compiler to run.
-Windows CI is configured to build a portable wheel; that new wheel has not yet
-been verified on Windows. Neither PyPI nor a GitHub Release has been published.
+Both macOS and Windows wheels passed CI builds and fresh isolated installation
+in the [release workflow](https://github.com/yuchenzhu-research/YouTubeText/actions/runs/39875296716).
+The installation check runs `--help` and `doctor` without downloading speech
+models or running ASR. Neither PyPI nor a GitHub Release has been published.
 
 If you have the built macOS wheel, install it with:
 

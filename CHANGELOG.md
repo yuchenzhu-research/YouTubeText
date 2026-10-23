@@ -18,7 +18,7 @@
   atomic checkpoints, content/model/backend/recipe invalidation, and conservative
   boundary deduplication. Only the active temporary audio chunk is kept on disk.
 - macOS ARM64 wheel packaging with a bundled Apple Vision helper, source archive
-  packaging, fresh-install smoke checks, and CI configuration for Windows wheels.
+  packaging, and CI builds with fresh-install smoke checks for macOS/Windows wheels.
 - [MIT license](LICENSE) and refreshed English, Traditional Chinese, Simplified
   Chinese, Spanish, and Japanese documentation.
 
@@ -45,6 +45,8 @@
 - These are platform-caption and small generated-media checks. Broader real-video
   OCR/Whisper CER/WER accuracy remains unmeasured; timing/silence checks do not
   prove that speech is missing. Even 0.25-second OCR sampling can miss brief captions.
-- The macOS wheel passed a fresh install outside the checkout. The Windows wheel
-  build is configured in CI and awaits Windows verification. PyPI and GitHub
-  publication have not been performed.
+- The macOS wheel passed a local fresh install outside the checkout. Both macOS
+  and Windows wheels also passed CI builds and fresh isolated installation in the
+  [release workflow](https://github.com/yuchenzhu-research/YouTubeText/actions/runs/39875296716).
+  Installation checks run `--help` and `doctor` without downloading speech models
+  or running ASR. PyPI and GitHub Release publication have not been performed.
